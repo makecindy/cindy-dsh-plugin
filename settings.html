@@ -44,7 +44,6 @@
   button:hover:not(:disabled) { background: var(--surface-chip, #efefec); }
   button:disabled { opacity: 0.5; cursor: default; }
   button:focus-visible { outline: 2px solid var(--focus-ring, #4c8bf5); outline-offset: 2px; }
-  .muted { color: var(--text-tertiary, #8a8a86); font-size: 12px; }
   .foot { margin: 16px 0 0; color: var(--text-tertiary, #8a8a86); font-size: 12px; }
   .key {
     margin: 20px 0 0; padding: 16px 0 0;
@@ -75,6 +74,10 @@
   .harness-usage dt, .harness-usage dd { margin: 0; overflow-wrap: anywhere; }
   .harness-usage dd { text-align: end; font-variant-numeric: tabular-nums; }
   .harness-usage small { display: block; margin-top: 6px; color: var(--text-secondary, GrayText); }
+  dd.cli-version { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+  button.cli-refresh { display: inline-grid; place-items: center; padding: 0; width: 32px; height: 32px; border: 0; border-radius: 999px; }
+  #cli-maintenance { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  #cli-status { color: var(--text-secondary, GrayText); }
 </style>
 </head>
 <body>
@@ -83,22 +86,23 @@
     <span class="badge" id="badge" role="status" aria-live="polite"></span>
   </div>
 
-  <dl class="facts" id="facts" hidden>
-    <dt id="label-version"></dt><dd id="version"></dd>
+  <dl class="facts">
+    <dt id="label-version"></dt><dd class="cli-version">
+      <span id="version"></span>
+      <button type="button" id="recheck" class="cli-refresh" disabled aria-label="Check CLI version and updates">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 7a7 7 0 0 1 11.6-1L20 9M4 15l2.3 3a7 7 0 0 0 11.6-1"/></svg>
+      </button>
+      <div id="cli-maintenance" hidden>
+        <button type="button" id="cli-action"></button>
+        <span id="cli-status" role="status" aria-live="polite"></span>
+      </div>
+    </dd>
     <dt id="label-path"></dt><dd id="path" class="mono"></dd>
   </dl>
 
-  <div id="cli-maintenance" class="actions" hidden>
-    <button type="button" id="cli-action"></button>
-    <span id="cli-status" role="status" aria-live="polite"></span>
-  </div>
   <p class="detail" id="detail" hidden></p>
   <p class="note" id="note" hidden></p>
 
-  <div class="actions">
-    <button type="button" id="recheck"></button>
-    <span class="muted" id="checked-at"></span>
-  </div>
 
   <section class="key" id="key-section" hidden>
     <div class="key-head">
