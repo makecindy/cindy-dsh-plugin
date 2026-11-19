@@ -193,6 +193,24 @@ function uniqueAbsolute(ctx, dirs) {
   return out;
 }
 
+function managedDshRoot(options) {
+  const ctx = context(options);
+  const home = homeDir(ctx);
+  const local = ctx.win && envGet(ctx.env, 'LOCALAPPDATA', true);
+  return ctx.p.join(local || (ctx.win ? ctx.p.join(home, 'AppData', 'Local') : ctx.p.join(home, '.local', 'share')), 'cindy-dsh', 'cli');
+}
+
+function managedDsh(options) {
+  const ctx = context(options);
+  try {
+    const root = managedDshRoot(options);
+    const active = JSON.parse(fs.readFileSync(ctx.p.join(root, 'current.json'), 'utf8'));
+    if (!/^[a-f0-9-]{36}$/.test(active.id) || typeof active.node !== 'string' || !ctx.p.isAbsolute(active.node)) return null;
+    const entry = ctx.p.join(root, active.id, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js');
+    return isFile(entry) && isExecutable(active.node, ctx.win) ? { entry, node: active.node } : null;
+  } catch { return null; }
+}
+
 /** Directories searched for dsh, in order: PATH first, then well-known install locations. */
 function candidateDirs(options) {
   const ctx = context(options);
@@ -222,7 +240,7 @@ function findDshCandidates(options) {
 
 /** The dsh executable Cindy will use, or null when none is installed. */
 function resolveDsh(options) {
-  return findDshCandidates(options)[0] || null;
+  return managedDsh(options)?.entry || findDshCandidates(options)[0] || null;
 }
 
 /**
@@ -272,6 +290,8 @@ function spawnDsh(dshPath, args, options) {
     stdio: (options && options.stdio) || 'pipe',
     windowsHide: true,
   };
+  const managed = managedDsh(options);
+  if (managed?.entry === dshPath) return spawn(managed.node, [dshPath, ...args], base);
   if (ctx.win && /\.(?:cmd|bat)$/i.test(dshPath)) {
     if (/["%!\r\n]/.test(dshPath)) {
       const error = new Error('The dsh path contains characters that cmd.exe cannot run safely');
@@ -415,6 +435,7 @@ module.exports = {
   detectDsh,
   findDshCandidates,
   killTree,
+  managedDshRoot,
   pickLocale,
   resolveDsh,
   spawnDsh,

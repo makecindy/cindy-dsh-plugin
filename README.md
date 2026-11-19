@@ -1,5 +1,9 @@
 # DeepSeek Harness 插件（dsh-acp）
 
+在 Cindy 打开 DeepSeek Harness 插件设置，可检测本机 CLI、从官方 npm 源安装及检查更新。安装需要本机 Node.js 24.9 或更高版本和 npm，使用当前用户的专用目录，已有的 DSH 登录和配置沿用。
+
+从旧版升级时，请从新仓库下载 .cindy 文件并在 Cindy 导入一次，之后插件更新将使用 makecindy 下的新地址。
+
 把本机已安装的 [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh)（`dsh`）作为
 Cindy 的任务执行引擎。插件通过清单的 `harnesses` 字段声明一个 ACP 引擎，Cindy 在模型选择器的
 「引擎」分组里显示「DeepSeek Harness」，选中后每个任务启动一个 `dsh --profile acp` 进程，
@@ -10,7 +14,7 @@ Cindy 的任务执行引擎。插件通过清单的 `harnesses` 字段声明一�
 
 ## 安装与更新
 
-1. 从本仓库的 [Releases](https://github.com/MagicLizi/cindy-dsh-plugin/releases) 下载最新的
+1. 从本仓库的 [Releases](https://github.com/makecindy/cindy-dsh-plugin/releases) 下载最新的
    `dsh-acp-<版本>.cindy`，在 Cindy 的插件页导入。安装确认会列出 Node 工作进程（本机权限）和
    「提供执行引擎 DeepSeek Harness」两项权限。
 2. 之后在插件设置页的宿主区域即可检查并安装新版本：清单里的 `githubRelease` 指向本仓库，

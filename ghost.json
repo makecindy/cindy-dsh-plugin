@@ -3,8 +3,8 @@
   "id": "dsh-acp",
   "name": "DeepSeek Harness",
   "description": "Run Cindy tasks with the DeepSeek Harness (dsh) installed on this computer.",
-  "version": "0.1.1",
-  "releaseNotes": "在插件设置和支持插件用量的任务栏查看 DeepSeek 官方账户余额。",
+  "version": "0.1.2",
+  "releaseNotes": "在插件设置中检测本机 CLI，并从官方渠道安装或检查和应用更新。",
   "minCindyVersion": "0.0.0",
   "icon": "icon.png",
   "locales": {
@@ -14,7 +14,7 @@
   "entry": "main.js",
   "launch": "resident",
   "settingsHtml": "settings.html",
-  "githubRelease": "MagicLizi/cindy-dsh-plugin",
+  "githubRelease": "makecindy/cindy-dsh-plugin",
   "node": {
     "entry": "worker.js",
     "protocol": "json-rpc-stdio",

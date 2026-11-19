@@ -20,6 +20,7 @@
  */
 
 const readline = require('node:readline');
+const maintain = require('./cli-installer.cjs');
 const { detectDsh } = require('./resolve-dsh.js');
 const { clearKey, keyStatus, readUsage, setKey } = require('./dsh-credentials.js');
 const { listModels } = require('./dsh-models.js');
@@ -40,6 +41,9 @@ function replyError(id, code, message) {
 
 let usageRead;
 const handlers = {
+  cliMaintenance(params) {
+    return maintain(params, () => reply({ jsonrpc: '2.0', method: 'progress' }));
+  },
   usage() {
     if (!usageRead) {
       const read = readUsage().catch(() => null).finally(() => {
