@@ -21,7 +21,7 @@
 
 const readline = require('node:readline');
 const { detectDsh } = require('./resolve-dsh.js');
-const { clearKey, keyStatus, setKey } = require('./dsh-credentials.js');
+const { clearKey, keyStatus, readUsage, setKey } = require('./dsh-credentials.js');
 const { listModels } = require('./dsh-models.js');
 
 /** Store failures (unreadable file, lock timeout) as data; DSH diagnostics never quote values. */
@@ -38,7 +38,17 @@ function replyError(id, code, message) {
   reply({ jsonrpc: '2.0', id, error: { code, message } });
 }
 
+let usageRead;
 const handlers = {
+  usage() {
+    if (!usageRead) {
+      const read = readUsage().catch(() => null).finally(() => {
+        if (usageRead === read) usageRead = undefined;
+      });
+      usageRead = read;
+    }
+    return usageRead;
+  },
   async detect(params) {
     const locale = params && typeof params.locale === 'string' ? params.locale : undefined;
     return detectDsh({ locale });
@@ -47,9 +57,11 @@ const handlers = {
     return keyStatus().catch(storeFailure);
   },
   async setKey(params) {
+    usageRead = undefined;
     return setKey(params && params.key).catch(storeFailure);
   },
   async clearKey() {
+    usageRead = undefined;
     return clearKey().catch(storeFailure);
   },
   async listModels(params) {

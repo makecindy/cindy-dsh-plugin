@@ -153,8 +153,8 @@ function readPid(file) {
   return text ? Number(text) : null;
 }
 
-function startWorker(env) {
-  const child = spawn(process.execPath, [path.join(root, 'worker.js')], { env, cwd: os.tmpdir(), stdio: 'pipe' });
+function startWorker(env, preload) {
+  const child = spawn(process.execPath, [...(preload ? ['--require', preload] : []), path.join(root, 'worker.js')], { env, cwd: os.tmpdir(), stdio: 'pipe' });
   const stderr = collect(child.stderr);
   const closed = waitClose(child);
   const waiting = [];
@@ -214,6 +214,10 @@ const file = path.join(home, 'credentials.json');
 const read = () => (fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {});
 export class LocalCredentialProvider {
   constructor(ctx, config) { fs.writeFileSync(path.join(home, 'provider-config.json'), JSON.stringify(config)); }
+  async resolve(ref) {
+    const value = read()[ref] || process.env[ref];
+    return value ? { value } : undefined;
+  }
   async describe(ref) {
     if (read()[ref]) return { configured: true, source: 'file', writable: true };
     if (process.env[ref]) return { configured: true, source: 'env', writable: true };
@@ -445,6 +449,32 @@ describe('dsh-acp plugin', { concurrency: true, timeout: 20_000 }, () => {
     assert.deepEqual(fs.readdirSync(noStore.dir).filter((name) => name.endsWith('.json')), []);
   });
 
+  test('usage checks the official account and preserves zero without exposing the credential', async t => {
+    const fixture = makeFixture(t);
+    const { storeFile } = addFakeCredentialStore(fixture);
+    const preload = path.join(fixture.dir, 'balance.cjs');
+    fs.writeFileSync(preload, `globalThis.fetch = async (url, options) => {
+      if (url !== 'https://api.deepseek.com/user/balance' || options.headers.Authorization !== 'Bearer fixture'
+        || options.redirect !== 'error') throw new Error('unexpected balance request');
+      return { ok: true, json: async () => ({ balance_infos: [
+        { currency: 'CNY', total_balance: '0.00', other: 'private' },
+        { currency: 'USD', total_balance: '1.23' }, { currency: 'USD', total_balance: '' }
+      ] }) };
+    };`);
+    const worker = startWorker({ ...fixture.env, FAKE_DSH_HOME: fixture.dir }, preload);
+    try {
+      fs.writeFileSync(storeFile, JSON.stringify({ DEEPSEEK_API_KEY: 'fixture' }));
+      const read = async id => (await worker.call({ jsonrpc: '2.0', id, method: 'usage', params: { harnessId: 'dsh' } })).result;
+      const usage = await read(1);
+      assert.ok(usage.updatedAt > 0);
+      assert.deepEqual(usage, { updatedAt: usage.updatedAt, balances: [
+        { currency: 'CNY', amount: '0.00' }, { currency: 'USD', amount: '1.23' },
+      ] });
+      fs.writeFileSync(storeFile, JSON.stringify({ DEEPSEEK_API_KEY: 'fixture', DEEPSEEK_BASE_URL: 'https://proxy.invalid' }));
+      assert.equal(await read(2), null);
+    } finally { await worker.close(); }
+  });
+
   test('main.js passes the key to the worker once and returns only its status fields', async () => {
     class Channel {
       static all = [];
@@ -496,7 +526,7 @@ describe('dsh-acp plugin', { concurrency: true, timeout: 20_000 }, () => {
     // Start-up without a saved list: detect, read DSH's models once, publish them with the status.
     await waitFor(() => puts.some((body) => body.harnesses[0].models), 3_000, 'models published');
     assert.deepEqual(calls('listModels'), [{ method: 'listModels', params: {}, timeoutMs: 90_000 }]);
-    assert.deepEqual(puts.at(-1), { harnesses: [{ id: 'dsh', available: true, version: '0.2.2',
+    assert.deepEqual(puts.at(-1), { harnesses: [{ id: 'dsh', available: true, reportsUsage: true, version: '0.2.2',
       models: [{ id: '["deepseek-official","v4-pro"]', name: 'DeepSeek-V4-Pro', group: 'DeepSeek' }] }] });
     assert.equal(savedState.modelSessionId, 'probe-1');
 

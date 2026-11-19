@@ -42,6 +42,47 @@
   var inflight = null;
   var seenRequests = [];
   var channel = typeof BroadcastChannel === 'function' ? new BroadcastChannel(CHANNEL_NAME) : null;
+  // Coalesce settings checks. Drop a read
+  // from the previous account if sign-in or credentials change mid-request.
+  let usage = null;
+  let usageWanted = false;
+  let usageCheck = 0;
+  let usageGeneration = 0;
+  let usagePending = null;
+  function announceUsage(checking = false) {
+    if (channel) channel.postMessage({ type: 'harness-usage', usage, checking });
+  }
+  function clearUsage() {
+    usageGeneration++;
+    usageCheck = 0;
+    usagePending = null;
+    usage = null;
+    announceUsage();
+  }
+  function refreshUsage() {
+    if (!usageAvailable()) {
+      usageWanted = true;
+      return Promise.resolve();
+    }
+    usageWanted = false;
+    if (usagePending) return usagePending;
+    if (Date.now() - usageCheck < 60000) return Promise.resolve();
+    usageCheck = Date.now();
+    const generation = usageGeneration;
+    usagePending = (async () => {
+      let next = null;
+      try {
+        const response = await cindy.node.request({ method: 'usage', params: {}, timeoutMs: 26000 });
+        if (response?.ok && (response.result?.windows?.length || response.result?.balances?.length)) next = response.result;
+      } catch { /* Absence of billing data does not affect the engine. */ }
+      if (generation !== usageGeneration || !usageAvailable()) return;
+      usage = next;
+      announceUsage();
+
+    })().finally(() => { if (generation === usageGeneration) usagePending = null; });
+    return usagePending;
+  }
+  function usageAvailable() { return !!(lastResult && lastResult.available); }
 
   /**
    * DSH's model list (published with the engine status, shown by Cindy like a provider's models)
@@ -117,6 +158,8 @@
   /** Only metadata leaves the plugin: never the executable path or a command. */
   function harnessEntry(result) {
     var entry = { id: HARNESS_ID, available: result.available === true };
+    if (entry.available) entry.reportsUsage = true;
+
     if (!entry.available) {
       entry.reason = result.reason === 'not-runnable' ? 'not-runnable' : 'not-installed';
       var messages = result.messages || {};
@@ -194,6 +237,8 @@
         }
         lastError = null;
         lastResult = sanitizeResult(response.result);
+        if (!lastResult.available) clearUsage();
+        else if (usageWanted) void refreshUsage();
         return publish(lastResult).then(function (published) {
           lastPublish = published;
           return snapshot();
@@ -290,6 +335,11 @@
     channel.onmessage = function (event) {
       var data = event && event.data;
       if (!data || typeof data !== 'object') return;
+      if (data.type === 'harness-usage-request') {
+        announceUsage(usageAvailable() && !usage && (!usageCheck || !!usagePending));
+        void refreshUsage();
+        return;
+      }
       if (typeof data.reqId !== 'string' || data.reqId.length > 64) return;
       if (data.type === 'detect-request') {
         channel.postMessage({ type: 'detect-ack', reqId: data.reqId });
@@ -309,7 +359,12 @@
         runKeyRequest(data.op, key).then(function (result) {
           channel.postMessage({ type: 'key-result', reqId: data.reqId, result: result });
           // The key decides which models DeepSeek offers: re-read the list after it changes.
-          if (data.op !== 'status' && result && result.supported && !result.error) refreshModels('force');
+          if (data.op !== 'status' && result && result.supported && !result.error) {
+            clearUsage();
+            if (lastResult) void publish(lastResult);
+            void refreshUsage();
+            refreshModels('force');
+          }
         });
       }
     };

@@ -17,6 +17,10 @@ Cindy 的任务执行引擎。插件通过清单的 `harnesses` 字段声明一�
    Cindy 读取 GitHub Release、校验附件摘要后走插件更新确认，启用状态、配置与数据保持不变。
 3. 需要支持插件执行引擎的 Cindy，见下方「前提条件」。
 
+## 账号用量
+
+设置页按币种显示 DeepSeek 官方账户的可用余额。插件使用 DSH 已保存的 DeepSeek 凭据查询官方余额接口。没有可用余额数据时，页面会显示提示。支持插件用量的 Cindy 也会在使用此引擎的任务输入框下方显示用量，点击可看明细。旁边的圆环显示当前任务由引擎上报的上下文占用。
+
 ## 模型与思考深度
 
 插件向 dsh 读取它提供的模型（ACP 的 `model` 配置项）以及每个模型可选的思考深度
@@ -102,7 +106,7 @@ settings.html ──BroadcastChannel──► main.js：打开设置页或点「
 `cindy-plugin-creator` 手册 §7）：
 
 1. 在 Cindy 的任务里让 Agent 调用 `ghost_forge_pack({ dir: "<本目录绝对路径>" })`：只校验并在本
-   目录生成 `dsh-acp-0.1.0.cindy`，不会安装。
+   目录生成 `dsh-acp-<版本>.cindy`，不会安装。
 2. 需要安装时，明确让 Agent 调用 `ghost_forge_install({ dir: "<本目录绝对路径>" })`，或在 Cindy
    的插件页导入上一步生成的 `.cindy`。安装确认会列出 Node 工作进程（本机权限）和
    「提供执行引擎 DeepSeek Harness」两项权限，确认后插件启用。

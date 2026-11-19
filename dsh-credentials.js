@@ -125,7 +125,7 @@ async function withStore(options, operation) {
   try {
     const store = await waitForStore(ctx, fiber);
     if (!store) return { supported: false, reason: 'unsupported-version' };
-    return await operation(store, credentials.credentialRef(KEY_REF));
+    return await operation(store, credentials.credentialRef(KEY_REF), credentials.credentialRef);
   } finally {
     if (fiber && typeof fiber.dispose === 'function') await fiber.dispose().catch(() => {});
   }
@@ -133,6 +133,28 @@ async function withStore(options, operation) {
 
 function keyStatus(options) {
   return withStore(options, async (store, ref) => statusOf(await store.describe(ref)));
+}
+
+/** The credential stays inside the DSH worker and is sent only to DeepSeek's fixed balance endpoint. */
+async function readUsage(options, request = fetch) {
+  const result = await withStore(options, async (store, ref, credentialRef) => {
+    const endpoint = await store.resolve(credentialRef('DEEPSEEK_BASE_URL'));
+    if (endpoint?.value && new URL(endpoint.value).origin !== 'https://api.deepseek.com') return null;
+    const credential = await store.resolve(ref);
+    if (!credential?.value) return null;
+    const response = await request('https://api.deepseek.com/user/balance', {
+      headers: { Authorization: 'Bearer ' + credential.value }, redirect: 'error',
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    if (!Array.isArray(data.balance_infos)) return null;
+    const balances = data.balance_infos.filter(row => row && ['CNY', 'USD'].includes(row.currency)
+      && typeof row.total_balance === 'string' && /^-?\d{1,15}(?:\.\d{1,12})?$/.test(row.total_balance))
+      .slice(0, 8).map(row => ({ currency: row.currency, amount: row.total_balance }));
+    return balances.length ? { updatedAt: Date.now(), balances } : null;
+  });
+  return result?.balances ? result : null;
 }
 
 /** A DeepSeek key is one token: no whitespace inside, bounded length. */
@@ -159,4 +181,4 @@ function clearKey(options) {
   });
 }
 
-module.exports = { KEY_REF, clearKey, findDshPackageDir, findModule, keyStatus, normalizeKey, setKey };
+module.exports = { KEY_REF, clearKey, findDshPackageDir, findModule, keyStatus, normalizeKey, readUsage, setKey };
