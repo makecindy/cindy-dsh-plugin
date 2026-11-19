@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  /* Colours come from the tokens Cindy injects (they follow Light / Dark and custom
+     themes). Fallbacks are only for an old host. The page background and
+     color-scheme are left to the host on purpose. */
+  body {
+    margin: 0;
+    padding: 16px;
+    font: 13px/1.5 Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: var(--text-primary, #1a1a1a);
+  }
+  [hidden] { display: none !important; }
+  .head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .title { font-size: 14px; font-weight: 600; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px; flex: none;
+    height: 22px; padding: 0 10px; border-radius: 999px;
+    font-size: 12px; font-weight: 500;
+    background: var(--surface-chip, #efefec);
+    color: var(--text-secondary, #5c5c58);
+  }
+  .badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .badge[data-tone="success"] { color: var(--status-success, #2f7d4f); }
+  .badge[data-tone="error"] { color: var(--error-fg, #b42318); }
+  .facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 12px 0 0; }
+  .facts dt { color: var(--text-secondary, #5c5c58); }
+  .facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+  .mono, .cmd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+  .hint {
+    margin: 12px 0 0; padding: 12px;
+    border: 1px solid var(--border-default, #e4e4e0); border-radius: 12px;
+  }
+  .hint p { margin: 0; }
+  .cmd {
+    display: block; margin: 8px 0; padding: 6px 10px; border-radius: 8px;
+    background: var(--surface-chip, #efefec); color: var(--text-primary, #1a1a1a);
+    user-select: all; overflow-wrap: anywhere;
+  }
+  .sub { color: var(--text-secondary, #5c5c58); }
+  .note { margin: 12px 0 0; color: var(--text-secondary, #5c5c58); }
+  .note[data-tone="error"] { color: var(--error-fg, #b42318); }
+  .detail { margin: 8px 0 0; color: var(--text-tertiary, #8a8a86); font-size: 12px; overflow-wrap: anywhere; }
+  .actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: 16px 0 0; }
+  button {
+    height: 32px; padding: 0 24px; border-radius: 999px;
+    border: 1px solid var(--border-default, #e4e4e0);
+    background: transparent; color: var(--text-primary, #1a1a1a);
+    font: inherit; font-weight: 500; cursor: pointer;
+    transition: background-color var(--motion-fast, 120ms) var(--motion-ease-out, ease-out);
+  }
+  button:hover:not(:disabled) { background: var(--surface-chip, #efefec); }
+  button:disabled { opacity: 0.5; cursor: default; }
+  button:focus-visible { outline: 2px solid var(--focus-ring, #4c8bf5); outline-offset: 2px; }
+  .muted { color: var(--text-tertiary, #8a8a86); font-size: 12px; }
+  .foot { margin: 16px 0 0; color: var(--text-tertiary, #8a8a86); font-size: 12px; }
+  .key {
+    margin: 20px 0 0; padding: 16px 0 0;
+    border-top: 1px solid var(--border-default, #e4e4e0);
+  }
+  .key-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .key-title { font-weight: 600; }
+  .key-status { color: var(--text-secondary, #5c5c58); font-size: 12px; text-align: right; }
+  .key-status[data-tone="success"] { color: var(--status-success, #2f7d4f); }
+  .key-status[data-tone="warning"] { color: var(--warning-fg, #b54708); }
+  .key-form { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 0; }
+  .key-form input {
+    flex: 1 1 220px; min-width: 0; height: 32px; padding: 0 12px; box-sizing: border-box;
+    border: 1px solid var(--border-default, #e4e4e0); border-radius: 8px;
+    background: transparent; color: var(--text-primary, #1a1a1a);
+    font: 12px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  .key-form input::placeholder {
+    color: var(--text-tertiary, #8a8a86);
+    font-family: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .key-form input:focus-visible { outline: 2px solid var(--focus-ring, #4c8bf5); outline-offset: 1px; }
+  .key-help { margin: 8px 0 0; color: var(--text-secondary, #5c5c58); font-size: 12px; }
+</style>
+</head>
+<body>
+  <div class="head">
+    <div class="title">DeepSeek Harness</div>
+    <span class="badge" id="badge" role="status" aria-live="polite"></span>
+  </div>
+
+  <dl class="facts" id="facts" hidden>
+    <dt id="label-version"></dt><dd id="version"></dd>
+    <dt id="label-path"></dt><dd id="path" class="mono"></dd>
+  </dl>
+
+  <div class="hint" id="hint" hidden>
+    <p id="hint-text"></p>
+    <code class="cmd" id="install-command">npm i -g @deepseek-ai/dsh</code>
+    <p class="sub" id="hint-after"></p>
+  </div>
+
+  <p class="detail" id="detail" hidden></p>
+  <p class="note" id="note" hidden></p>
+
+  <div class="actions">
+    <button type="button" id="recheck"></button>
+    <span class="muted" id="checked-at"></span>
+  </div>
+
+  <section class="key" id="key-section" hidden>
+    <div class="key-head">
+      <span class="key-title" id="key-title"></span>
+      <span class="key-status" id="key-status" role="status" aria-live="polite"></span>
+    </div>
+    <form class="key-form" id="key-form" autocomplete="off">
+      <input type="password" id="key-input" autocomplete="off" spellcheck="false" placeholder="sk-…">
+      <button type="submit" id="key-save"></button>
+      <button type="button" id="key-clear" hidden></button>
+    </form>
+    <p class="key-help" id="key-help"></p>
+    <p class="note" id="key-note" hidden></p>
+  </section>
+
+  <p class="foot" id="foot"></p>
+
+  <script src="settings.js"></script>
+</body>
+</html>
