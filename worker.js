@@ -17,6 +17,9 @@
  *     -> { supported: true, models: [{ id, name, description?, group? }], sessionId? }
  *      | { supported: false, reason } | { supported: true, error, detail? }
  *     Asks dsh for its models over ACP in the plugin's one dedicated session (see dsh-models.js).
+ *   cliMaintenance({ action, version?, op? }) -> { state, version } | { error }
+ *     Checks, installs or updates dsh from npm (see cli-installer.cjs). While installing it sends
+ *     `progress` keep-alives and `cli-progress` { op, events } notifications for the settings page.
  */
 
 const readline = require('node:readline');
@@ -42,7 +45,7 @@ function replyError(id, code, message) {
 let usageRead;
 const handlers = {
   cliMaintenance(params) {
-    return maintain(params, () => reply({ jsonrpc: '2.0', method: 'progress' }));
+    return maintain(params, (method, data) => reply({ jsonrpc: '2.0', method, ...(data ? { params: data } : {}) }));
   },
   usage() {
     if (!usageRead) {

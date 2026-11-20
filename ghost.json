@@ -3,8 +3,8 @@
   "id": "dsh-acp",
   "name": "DeepSeek Harness",
   "description": "Run Cindy tasks with the DeepSeek Harness (dsh) installed on this computer.",
-  "version": "0.1.5",
-  "releaseNotes": "对齐设置页的 CLI 版本标签、版本号、刷新图标和更新状态。",
+  "version": "0.1.6",
+  "releaseNotes": "安装或更新 CLI 时，设置页显示当前步骤、下载进度和可展开的安装日志，重新打开设置也能看到。",
   "minCindyVersion": "0.0.0",
   "icon": "icon.png",
   "locales": {
