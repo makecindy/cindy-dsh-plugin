@@ -25,6 +25,19 @@ Cindy 的任务执行引擎。插件通过清单的 `harnesses` 字段声明一�
 
 设置页按币种显示 DeepSeek 官方账户的可用余额。插件使用 DSH 已保存的 DeepSeek 凭据查询官方余额接口。没有可用余额数据时，页面会显示提示。支持插件用量的 Cindy 也会在使用此引擎的任务输入框下方显示用量，点击可看明细。旁边的圆环显示当前任务由引擎上报的上下文占用。
 
+## 让自己的其他电脑使用
+
+在插件设置里为「DeepSeek Harness」打开「允许被远程调用」后，同一账号的另一台电脑新建任务时可以选这台的
+DeepSeek Harness：Agent 在这台电脑上运行，用这里的 dsh、登录和余额；项目文件与命令仍在任务所在的那台电脑。
+开关默认关闭，只能在这台电脑上改。不对别人分享的供应商和供应商组开放。两台电脑的 Cindy 都要支持
+「其他电脑使用插件执行引擎」；Cindy 不支持时这个开关不会出现，插件其余功能照常。
+
+这类任务里 dsh 自带的读写文件、执行命令、后台任务、切换目录和工作流工具都会关掉(它们只能碰到这台电脑，
+项目不在这里)，改用 Cindy 提供的工具在任务所在电脑上执行。关闭只对这一次启动生效：插件用
+`dsh --profile acp --patch remote-workspace.patch.yml` 叠加一层配置，不改你的 dsh 配置，你自己在终端里用 dsh
+不受影响。启动前插件会读回 dsh 的实际配置核对；发现还有会作用在本机的工具(例如新版本 dsh 新增的，或你在
+dsh 里装的工具插件)，就不启动并在插件日志里写明是哪个工具。需要支持 `--patch` 的 dsh。
+
 ## 模型与思考深度
 
 插件向 dsh 读取它提供的模型（ACP 的 `model` 配置项）以及每个模型可选的思考深度
@@ -52,6 +65,7 @@ settings.html ──BroadcastChannel──► main.js：打开设置页或点「
 | `dsh-models.js` | 经 ACP 读取 dsh 的模型与每个模型的思考深度 |
 | `dsh-credentials.js` | 经 DSH 自带的凭证存储读写 DeepSeek API Key（设置页使用） |
 | `dsh-acp.js` | ACP 引擎入口：启动 `dsh --profile acp`，双向原样转发 stdio |
+| `remote-workspace.js` / `remote-workspace.patch.yml` | 任务文件在另一台电脑时：关掉 dsh 自带的本机工具并在启动前核对 |
 | `settings.html` / `settings.js` | 设置页：检测结果、版本、位置、安装提示与「重新检测」 |
 | `locales/` | 清单名称与说明的英文、简体中文文案 |
 | `test/bridge.test.mjs` | 用假 dsh 验证检测与转发（`node --test test/bridge.test.mjs`） |

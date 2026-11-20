@@ -290,6 +290,8 @@ function spawnDsh(dshPath, args, options) {
     stdio: (options && options.stdio) || 'pipe',
     windowsHide: true,
   };
+  // A working directory chosen by this package (never by a caller outside it).
+  if (options && typeof options.cwd === 'string' && options.cwd) base.cwd = options.cwd;
   const managed = managedDsh(options);
   if (managed?.entry === dshPath) return spawn(managed.node, [dshPath, ...args], base);
   if (ctx.win && /\.(?:cmd|bat)$/i.test(dshPath)) {

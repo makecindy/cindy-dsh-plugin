@@ -36,9 +36,27 @@ if (args.length === 1 && args[0] === '--version') {
   process.stdout.write('dsh 0.2.2\\n');
   process.exit(0);
 }
-if (args.length !== 2 || args[0] !== '--profile' || args[1] !== 'acp') {
+const REMOTE = ['--profile', 'acp', '--patch', 'remote-workspace.patch.yml'];
+const isRemote = args.length >= 4 && REMOTE.every((value, index) => args[index] === value);
+if (isRemote && process.env.FAKE_DSH_NO_PATCH === '1') {
+  process.stderr.write("error: unknown option '--patch'\\n");
+  process.exit(1);
+}
+if (isRemote && args.length === 5 && args[4] === '--dump-config') {
+  // The composed tree as dsh prints it: the overlay file in the working directory decides what is off.
+  const overlay = fs.readFileSync('remote-workspace.patch.yml', 'utf8');
+  // The overlay may be checked out with CRLF line endings; dsh reads it either way.
+  const off = (id) => new RegExp('^- id: ' + id + '\\r?\\n  disabled: true\\r?$', 'm').test(overlay);
+  const tools = ['tool-bash', 'tool-fs', 'tool-workflow', 'tool-todo', ...(process.env.FAKE_DSH_EXTRA_TOOL ? [process.env.FAKE_DSH_EXTRA_TOOL] : [])];
+  process.stdout.write('- id: llm\\n  name: llm\\n' + tools.map((id) => '- id: ' + id + '\\n  name: x\\n' + (off(id) ? '  disabled: true\\n' : '')).join(''));
+  process.exit(0);
+}
+if (!(isRemote && args.length === 4) && (args.length !== 2 || args[0] !== '--profile' || args[1] !== 'acp')) {
   process.stderr.write('fake-dsh: unexpected arguments ' + JSON.stringify(args) + '\\n');
   process.exit(2);
+}
+if (process.env.FAKE_DSH_LAUNCHFILE) {
+  fs.writeFileSync(process.env.FAKE_DSH_LAUNCHFILE, JSON.stringify({ args, cwd: process.cwd(), files: fs.readdirSync(process.cwd()) }));
 }
 if (process.env.FAKE_DSH_PIDFILE) fs.writeFileSync(process.env.FAKE_DSH_PIDFILE, String(process.pid));
 process.stderr.write('fake-dsh: ready\\n');
@@ -230,8 +248,8 @@ export class LocalCredentialProvider {
   return { storeFile: path.join(fixture.dir, 'credentials.json'), configFile: path.join(fixture.dir, 'provider-config.json') };
 }
 
-function startBridge(env) {
-  const child = spawn(process.execPath, [path.join(root, 'dsh-acp.js')], { env, cwd: os.tmpdir(), stdio: 'pipe' });
+function startBridge(env, args = []) {
+  const child = spawn(process.execPath, [path.join(root, 'dsh-acp.js'), ...args], { env, cwd: os.tmpdir(), stdio: 'pipe' });
   return { child, stdout: collect(child.stdout), stderr: collect(child.stderr), closed: waitClose(child) };
 }
 
@@ -299,6 +317,51 @@ describe('dsh-acp plugin', { concurrency: true, timeout: 20_000 }, () => {
     assert.ok(bridge.stdout.bytes().equals(EXPECTED_RESPONSE), 'no extra bytes on stdout');
     assert.match(bridge.stderr.text(), /fake-dsh: ready/);
     await waitFor(() => !isAlive(pid), 3_000, 'fake dsh to exit');
+  });
+
+  // Why: with the project on another computer, dsh's own file and command tools would act on the
+  // wrong computer. Gap: the existing relay tests only cover the plain `--profile acp` launch.
+  // Smallest failing input: the same initialize request, with Cindy's remote-workspace argument.
+  test('remote-workspace mode starts dsh with its own tools off, in a private directory', async (t) => {
+    const launchFile = path.join(os.tmpdir(), `dsh-acp-launch-${process.pid}-${Date.now()}.json`);
+    t.after(() => fs.rmSync(launchFile, { force: true }));
+    const fixture = makeFixture(t, { extraEnv: { FAKE_DSH_LAUNCHFILE: launchFile } });
+    const bridge = startBridge(fixture.env, ['--cindy-remote-workspace']);
+    bridge.child.stdin.write(INITIALIZE);
+    await waitFor(() => bridge.stdout.bytes().length >= EXPECTED_RESPONSE.length, 8_000, 'initialize response');
+    assert.ok(bridge.stdout.bytes().equals(EXPECTED_RESPONSE), `stdout was ${JSON.stringify(bridge.stdout.text())}`);
+    const launch = JSON.parse(fs.readFileSync(launchFile, 'utf8'));
+    assert.deepEqual(launch.args, ['--profile', 'acp', '--patch', 'remote-workspace.patch.yml']);
+    assert.deepEqual(launch.files, ['remote-workspace.patch.yml'], 'dsh runs in a directory holding only the overlay');
+    assert.ok(!samePath(launch.cwd, os.tmpdir()), 'not the shared temp folder');
+
+    bridge.child.stdin.end();
+    const { code } = await bridge.closed;
+    assert.equal(code, 0);
+    assert.ok(!fs.existsSync(launch.cwd), 'the private directory is removed when the task ends');
+  });
+
+  // Why: the overlay only names the tools known today. A tool it does not switch off (a newer dsh,
+  // or a plugin in the user's profile) would touch this computer, so the launch must not happen.
+  test('remote-workspace mode refuses to start when a tool would still act on this computer', async (t) => {
+    const fixture = makeFixture(t, { extraEnv: { FAKE_DSH_EXTRA_TOOL: 'tool-new-shell' } });
+    const bridge = startBridge(fixture.env, ['--cindy-remote-workspace']);
+    bridge.child.stdin.write(INITIALIZE);
+    const { code } = await bridge.closed;
+    assert.equal(code, 78);
+    assert.equal(bridge.stdout.bytes().length, 0, 'dsh never answered: it was not started');
+    assert.match(bridge.stderr.text(), /tool-new-shell/);
+    assert.equal(readPid(fixture.pidFile), null, 'the ACP process was never launched');
+  });
+
+  // Why: a dsh from before `--patch` cannot take the overlay; it must not fall back to a normal launch.
+  test('remote-workspace mode refuses a dsh that does not accept the overlay', async (t) => {
+    const fixture = makeFixture(t, { extraEnv: { FAKE_DSH_NO_PATCH: '1' } });
+    const bridge = startBridge(fixture.env, ['--cindy-remote-workspace']);
+    const { code } = await bridge.closed;
+    assert.equal(code, 78);
+    assert.equal(bridge.stdout.bytes().length, 0);
+    assert.equal(readPid(fixture.pidFile), null);
   });
 
   test('stopping dsh-acp leaves no dsh process behind', async (t) => {
@@ -526,7 +589,7 @@ describe('dsh-acp plugin', { concurrency: true, timeout: 20_000 }, () => {
     // Start-up without a saved list: detect, read DSH's models once, publish them with the status.
     await waitFor(() => puts.some((body) => body.harnesses[0].models), 3_000, 'models published');
     assert.deepEqual(calls('listModels'), [{ method: 'listModels', params: {}, timeoutMs: 90_000 }]);
-    assert.deepEqual(puts.at(-1), { harnesses: [{ id: 'dsh', available: true, reportsUsage: true, version: '0.2.2',
+    assert.deepEqual(puts.at(-1), { harnesses: [{ id: 'dsh', available: true, reportsUsage: true, remoteWorkspace: true, version: '0.2.2',
       models: [{ id: '["deepseek-official","v4-pro"]', name: 'DeepSeek-V4-Pro', group: 'DeepSeek' }] }] });
     assert.equal(savedState.modelSessionId, 'probe-1');
 

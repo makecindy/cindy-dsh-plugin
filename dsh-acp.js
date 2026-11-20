@@ -11,10 +11,15 @@
  * When Cindy closes stdin, dsh's stdin is closed and dsh exits on its own; when dsh
  * exits, this process exits with the same code. When this process is asked to stop,
  * dsh (and on Windows its whole process tree) is stopped first so nothing is orphaned.
+ *
+ * Started with `--cindy-remote-workspace` (the task's files and commands are on another
+ * computer), dsh runs with its own file and command tools switched off for this one
+ * process; see remote-workspace.js. Nothing in the user's dsh profile is changed.
  */
 
 const os = require('node:os');
 const { resolveDsh, spawnDsh, killTree } = require('./resolve-dsh.js');
+const remoteWorkspace = require('./remote-workspace.js');
 
 /** dsh normally exits right after stdin closes; force it if it lingers. */
 const STDIN_END_GRACE_MS = 5_000;
@@ -22,6 +27,9 @@ const STDIN_END_GRACE_MS = 5_000;
 const SIGNAL_GRACE_MS = 1_500;
 const FLUSH_TIMEOUT_MS = 2_000;
 const NOT_FOUND_EXIT_CODE = 127;
+/** Remote-workspace mode could not be established; dsh was not started. */
+const REMOTE_WORKSPACE_EXIT_CODE = 78;
+const LOCAL_ARGS = Object.freeze(['--profile', 'acp']);
 
 function exitAfterStderr(line, code) {
   let done = false;
@@ -49,10 +57,10 @@ function exitCodeFor(code, signal) {
   return 1;
 }
 
-function run(dshPath) {
+function run(dshPath, args, cwd) {
   let child;
   try {
-    child = spawnDsh(dshPath, ['--profile', 'acp'], { stdio: ['pipe', 'pipe', 'pipe'] });
+    child = spawnDsh(dshPath, args, { stdio: ['pipe', 'pipe', 'pipe'], ...(cwd ? { cwd } : {}) });
   } catch (error) {
     exitAfterStderr(`[dsh-acp] Could not start DeepSeek Harness at ${dshPath} (${describe(error)}).`, NOT_FOUND_EXIT_CODE);
     return;
@@ -156,9 +164,32 @@ function run(dshPath) {
   });
 }
 
+/**
+ * The project is on another computer: start dsh only once its own file and command tools are
+ * confirmed off for this launch. Any doubt ends here, before dsh sees a single message.
+ */
+function runRemoteWorkspace(dshPath) {
+  let dir;
+  try {
+    dir = remoteWorkspace.prepareLaunchDir();
+  } catch (error) {
+    exitAfterStderr(`[dsh-acp] Could not prepare the remote-workspace launch (${describe(error)}). DeepSeek Harness was not started.`, REMOTE_WORKSPACE_EXIT_CODE);
+    return;
+  }
+  process.on('exit', () => remoteWorkspace.removeLaunchDir(dir));
+  remoteWorkspace.verifyRemoteWorkspace(spawnDsh, dshPath, dir).then((check) => {
+    if (!check.ok) {
+      exitAfterStderr(`[dsh-acp] DeepSeek Harness cannot run a task whose files are on another computer: ${check.detail}. It was not started.`, REMOTE_WORKSPACE_EXIT_CODE);
+      return;
+    }
+    run(dshPath, remoteWorkspace.LAUNCH_ARGS, dir);
+  });
+}
+
 const dshPath = resolveDsh();
 if (dshPath) {
-  run(dshPath);
+  if (remoteWorkspace.isRemoteWorkspaceLaunch(process.argv)) runRemoteWorkspace(dshPath);
+  else run(dshPath, LOCAL_ARGS);
 } else {
   exitAfterStderr(
     '[dsh-acp] DeepSeek Harness (dsh) was not found on this computer. Install it with "npm i -g @deepseek-ai/dsh" (requires Node.js 24.9 or later), then start the task again.',
