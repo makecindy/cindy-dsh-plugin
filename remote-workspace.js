@@ -23,10 +23,14 @@ const os = require('node:os');
 const path = require('node:path');
 
 const REMOTE_WORKSPACE_ARG = '--cindy-remote-workspace';
+const GUEST_WORKSPACE_ARG = '--cindy-guest-workspace';
 const PATCH_FILE = 'remote-workspace.patch.yml';
+const GUEST_PATCH_FILE = 'guest-workspace.patch.yml';
 /** dsh resolves `--patch` against its working directory, so the argument stays a package constant. */
 const LAUNCH_ARGS = Object.freeze(['--profile', 'acp', '--patch', PATCH_FILE]);
+const GUEST_LAUNCH_ARGS = Object.freeze(['--profile', 'acp', '--patch', GUEST_PATCH_FILE]);
 const CHECK_ARGS = Object.freeze([...LAUNCH_ARGS, '--dump-config']);
+const GUEST_CHECK_ARGS = Object.freeze([...GUEST_LAUNCH_ARGS, '--dump-config']);
 const CHECK_TIMEOUT_MS = 10_000;
 const MAX_CONFIG_BYTES = 4 * 1024 * 1024;
 
@@ -49,8 +53,43 @@ const SAFE_TOOL_IDS = new Set([
   'tool-executor-native',
 ]);
 
+/**
+ * In `--cindy-guest-workspace` mode (cross-account provider sharing), the sharer's local skills,
+ * instructions, slash commands and local HTTP fetch must also be disabled.
+ */
+const GUEST_SAFE_TOOL_IDS = new Set([
+  'tool-agent-team',
+  'tool-subagent-control',
+  'tool-subagent',
+  'tool-subagent-fork',
+  'tool-result-pruner',
+  'tool-todo',
+  'tool-goal',
+  'tool-executor-native',
+]);
+const GUEST_MUST_DISABLE_IDS = new Set([
+  'plugin-manager',
+  'agent-instructions',
+  'skill',
+  'skill-filesystem',
+  'commands',
+  'web-fetch-http',
+]);
+
+function isGuestWorkspaceLaunch(argv) {
+  return Array.isArray(argv) && argv.slice(2).includes(GUEST_WORKSPACE_ARG);
+}
+
 function isRemoteWorkspaceLaunch(argv) {
-  return Array.isArray(argv) && argv.slice(2).includes(REMOTE_WORKSPACE_ARG);
+  return Array.isArray(argv) && (argv.slice(2).includes(REMOTE_WORKSPACE_ARG) || argv.slice(2).includes(GUEST_WORKSPACE_ARG));
+}
+
+function patchFileFor(options) {
+  return options && options.guest ? GUEST_PATCH_FILE : PATCH_FILE;
+}
+
+function launchArgsFor(options) {
+  return options && options.guest ? GUEST_LAUNCH_ARGS : LAUNCH_ARGS;
 }
 
 /**
@@ -58,10 +97,11 @@ function isRemoteWorkspaceLaunch(argv) {
  * its default workspace root from the working directory; an empty directory of our own keeps
  * anything it might still do away from the user's files.
  */
-function prepareLaunchDir(tmpRoot) {
+function prepareLaunchDir(tmpRoot, options) {
+  const patchFile = patchFileFor(options);
   const dir = fs.mkdtempSync(path.join(tmpRoot || os.tmpdir(), 'cindy-dsh-remote-'));
   try {
-    fs.copyFileSync(path.join(__dirname, PATCH_FILE), path.join(dir, PATCH_FILE));
+    fs.copyFileSync(path.join(__dirname, patchFile), path.join(dir, patchFile));
   } catch (error) {
     removeLaunchDir(dir);
     throw error;
@@ -84,16 +124,19 @@ function unquote(value) {
 /**
  * Reads the composed tree printed by `--dump-config` (a YAML list of `- id: …` entries) and
  * returns what must stop a remote-workspace launch: the ids of `tool-*` entries that are still
- * enabled and not known to be harmless. A tool counts as off only when its entry says
- * `disabled: true` literally; a computed `disabled` could turn out true or false.
+ * enabled and not known to be harmless (plus sharer-private modules in guest mode). A module
+ * counts as off only when its entry says `disabled: true` literally; a computed `disabled` could
+ * turn out true or false.
  * `entries` is the number of entries seen, so a caller can tell an unreadable dump from a clean one.
  */
-function inspectComposedConfig(text) {
+function inspectComposedConfig(text, options) {
+  const guest = Boolean(options && options.guest);
+  const safeTools = guest ? GUEST_SAFE_TOOL_IDS : SAFE_TOOL_IDS;
   const offenders = [];
   let entries = 0;
   let current = null;
   const flush = () => {
-    if (current && !current.disabled && !SAFE_TOOL_IDS.has(current.id)) offenders.push(current.id);
+    if (current && !current.disabled && !safeTools.has(current.id)) offenders.push(current.id);
     current = null;
   };
   for (const line of String(text).split(/\r?\n/)) {
@@ -102,7 +145,8 @@ function inspectComposedConfig(text) {
       flush();
       entries += 1;
       const id = unquote(start[1]);
-      current = id.startsWith('tool-') ? { id, disabled: false } : null;
+      const tracked = id.startsWith('tool-') || (guest && GUEST_MUST_DISABLE_IDS.has(id));
+      current = tracked ? { id, disabled: false } : null;
       continue;
     }
     if (/^- /.test(line)) {
@@ -122,11 +166,13 @@ function inspectComposedConfig(text) {
  * Runs the check launch and resolves to `{ ok: true }` or `{ ok: false, detail }`. `spawnDsh` is
  * the launcher from resolve-dsh.js (constant arguments only).
  */
-function verifyRemoteWorkspace(spawnDsh, dshPath, cwd, timeoutMs) {
+function verifyRemoteWorkspace(spawnDsh, dshPath, cwd, timeoutMs, options) {
+  const guest = Boolean(options && options.guest);
+  const checkArgs = guest ? GUEST_CHECK_ARGS : CHECK_ARGS;
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawnDsh(dshPath, CHECK_ARGS, { stdio: ['ignore', 'pipe', 'pipe'], cwd });
+      child = spawnDsh(dshPath, checkArgs, { stdio: ['ignore', 'pipe', 'pipe'], cwd });
     } catch (error) {
       resolve({ ok: false, detail: `could not run dsh (${error && error.message ? error.message : error})` });
       return;
@@ -160,7 +206,7 @@ function verifyRemoteWorkspace(spawnDsh, dshPath, cwd, timeoutMs) {
         settle({ ok: false, detail: `this dsh version does not accept the remote-workspace overlay (exit code ${code})` });
         return;
       }
-      const { entries, offenders } = inspectComposedConfig(Buffer.concat(chunks).toString('utf8'));
+      const { entries, offenders } = inspectComposedConfig(Buffer.concat(chunks).toString('utf8'), { guest });
       if (entries === 0) {
         settle({ ok: false, detail: 'the configuration dsh printed could not be read' });
       } else if (offenders.length > 0) {
@@ -173,11 +219,17 @@ function verifyRemoteWorkspace(spawnDsh, dshPath, cwd, timeoutMs) {
 }
 
 module.exports = {
+  GUEST_LAUNCH_ARGS,
+  GUEST_PATCH_FILE,
+  GUEST_WORKSPACE_ARG,
   LAUNCH_ARGS,
   PATCH_FILE,
   REMOTE_WORKSPACE_ARG,
   inspectComposedConfig,
+  isGuestWorkspaceLaunch,
   isRemoteWorkspaceLaunch,
+  launchArgsFor,
+  patchFileFor,
   prepareLaunchDir,
   removeLaunchDir,
   verifyRemoteWorkspace,

@@ -57,7 +57,8 @@ function exitCodeFor(code, signal) {
   return 1;
 }
 
-function run(dshPath, args, cwd) {
+function run(dshPath, args, cwd, options) {
+  const guest = Boolean(options && options.guest);
   let child;
   try {
     child = spawnDsh(dshPath, args, { stdio: ['pipe', 'pipe', 'pipe'], ...(cwd ? { cwd } : {}) });
@@ -75,7 +76,7 @@ function run(dshPath, args, cwd) {
     if (finished) return;
     finished = true;
     clearTimeout(forceTimer);
-    process.stdin.unpipe(child.stdin);
+    if (!guest) process.stdin.unpipe(child.stdin);
     const done = () => process.exit(code);
     if (process.stdout.writableLength > 0) {
       process.stdout.once('drain', done);
@@ -127,8 +128,44 @@ function run(dshPath, args, cwd) {
     });
   });
 
-  // Byte-for-byte relay. No encoding is set anywhere, so chunks stay Buffers.
-  process.stdin.pipe(child.stdin);
+  // Byte-for-byte relay for local and same-account launches; in guest-workspace mode,
+  // block `session/list` so an invited user can never enumerate the sharer's local sessions.
+  if (guest) {
+    let pending = [];
+    process.stdin.on('data', (chunk) => {
+      if (finished || childExited) return;
+      let start = 0;
+      let index;
+      while ((index = chunk.indexOf(0x0a, start)) !== -1) {
+        const piece = chunk.subarray(start, index + 1);
+        const line = pending.length ? Buffer.concat([...pending, piece]) : piece;
+        pending = [];
+        start = index + 1;
+        let parsed = null;
+        try { parsed = JSON.parse(line.toString('utf8')); } catch { parsed = null; }
+        if (parsed && typeof parsed === 'object' && parsed.method === 'session/list') {
+          if (parsed.id !== undefined) {
+            process.stdout.write(JSON.stringify({
+              jsonrpc: '2.0',
+              id: parsed.id,
+              error: { code: -32601, message: 'session/list is not available for shared sessions' },
+            }) + '\n');
+          }
+          continue;
+        }
+        if (!child.stdin.write(line)) {
+          process.stdin.pause();
+          child.stdin.once('drain', () => process.stdin.resume());
+        }
+      }
+      if (start < chunk.length) pending.push(chunk.subarray(start));
+    });
+    process.stdin.on('end', () => {
+      try { child.stdin.end(); } catch { /* ignore */ }
+    });
+  } else {
+    process.stdin.pipe(child.stdin);
+  }
   child.stdin.on('error', () => {
     // EPIPE after dsh exited; the exit handler takes care of shutting down.
   });
@@ -168,28 +205,31 @@ function run(dshPath, args, cwd) {
  * The project is on another computer: start dsh only once its own file and command tools are
  * confirmed off for this launch. Any doubt ends here, before dsh sees a single message.
  */
-function runRemoteWorkspace(dshPath) {
+function runRemoteWorkspace(dshPath, guest) {
   let dir;
   try {
-    dir = remoteWorkspace.prepareLaunchDir();
+    dir = remoteWorkspace.prepareLaunchDir(undefined, { guest });
   } catch (error) {
     exitAfterStderr(`[dsh-acp] Could not prepare the remote-workspace launch (${describe(error)}). DeepSeek Harness was not started.`, REMOTE_WORKSPACE_EXIT_CODE);
     return;
   }
   process.on('exit', () => remoteWorkspace.removeLaunchDir(dir));
-  remoteWorkspace.verifyRemoteWorkspace(spawnDsh, dshPath, dir).then((check) => {
+  remoteWorkspace.verifyRemoteWorkspace(spawnDsh, dshPath, dir, undefined, { guest }).then((check) => {
     if (!check.ok) {
       exitAfterStderr(`[dsh-acp] DeepSeek Harness cannot run a task whose files are on another computer: ${check.detail}. It was not started.`, REMOTE_WORKSPACE_EXIT_CODE);
       return;
     }
-    run(dshPath, remoteWorkspace.LAUNCH_ARGS, dir);
+    run(dshPath, remoteWorkspace.launchArgsFor({ guest }), dir, { guest });
   });
 }
 
 const dshPath = resolveDsh();
 if (dshPath) {
-  if (remoteWorkspace.isRemoteWorkspaceLaunch(process.argv)) runRemoteWorkspace(dshPath);
-  else run(dshPath, LOCAL_ARGS);
+  if (remoteWorkspace.isRemoteWorkspaceLaunch(process.argv)) {
+    runRemoteWorkspace(dshPath, remoteWorkspace.isGuestWorkspaceLaunch(process.argv));
+  } else {
+    run(dshPath, LOCAL_ARGS);
+  }
 } else {
   exitAfterStderr(
     '[dsh-acp] DeepSeek Harness (dsh) was not found on this computer. Install it with "npm i -g @deepseek-ai/dsh" (requires Node.js 24.9 or later), then start the task again.',

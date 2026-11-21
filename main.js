@@ -159,8 +159,11 @@
   function harnessEntry(result) {
     var entry = { id: HARNESS_ID, available: result.available === true };
     if (entry.available) entry.reportsUsage = true;
-    // dsh-acp.js can run a task whose files are on another computer (remote-workspace.js).
-    if (entry.available) entry.remoteWorkspace = true;
+    // dsh-acp.js can run tasks whose files are on another computer or shared with friends (remote-workspace.js).
+    if (entry.available) {
+      entry.remoteWorkspace = true;
+      entry.guestWorkspace = true;
+    }
 
     if (!entry.available) {
       entry.reason = result.reason === 'not-runnable' ? 'not-runnable' : 'not-installed';

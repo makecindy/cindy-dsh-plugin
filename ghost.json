@@ -3,8 +3,8 @@
   "id": "dsh-acp",
   "name": "DeepSeek Harness",
   "description": "Run Cindy tasks with the DeepSeek Harness (dsh) installed on this computer.",
-  "version": "0.2.0",
-  "releaseNotes": "同一账号的其他电脑可以使用这台电脑上的 DeepSeek Harness：在插件设置里打开「允许被远程调用」。",
+  "version": "0.3.0",
+  "releaseNotes": "支持把这台电脑上的 DeepSeek Harness 分享给朋友免安装使用，同账号的其他电脑也可免装插件直接使用；分享模式下额外关闭本机技能、指令与本机网页抓取，保护本机数据与内网。",
   "minCindyVersion": "0.0.0",
   "icon": "icon.png",
   "locales": {

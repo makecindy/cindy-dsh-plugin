@@ -36,18 +36,18 @@ if (args.length === 1 && args[0] === '--version') {
   process.stdout.write('dsh 0.2.2\\n');
   process.exit(0);
 }
-const REMOTE = ['--profile', 'acp', '--patch', 'remote-workspace.patch.yml'];
-const isRemote = args.length >= 4 && REMOTE.every((value, index) => args[index] === value);
+const PATCH_FILES = new Set(['remote-workspace.patch.yml', 'guest-workspace.patch.yml']);
+const isRemote = args.length >= 4 && args[0] === '--profile' && args[1] === 'acp' && args[2] === '--patch' && PATCH_FILES.has(args[3]);
 if (isRemote && process.env.FAKE_DSH_NO_PATCH === '1') {
   process.stderr.write("error: unknown option '--patch'\\n");
   process.exit(1);
 }
 if (isRemote && args.length === 5 && args[4] === '--dump-config') {
   // The composed tree as dsh prints it: the overlay file in the working directory decides what is off.
-  const overlay = fs.readFileSync('remote-workspace.patch.yml', 'utf8');
+  const overlay = fs.readFileSync(args[3], 'utf8');
   // The overlay may be checked out with CRLF line endings; dsh reads it either way.
   const off = (id) => new RegExp('^- id: ' + id + '\\r?\\n  disabled: true\\r?$', 'm').test(overlay);
-  const tools = ['tool-bash', 'tool-fs', 'tool-workflow', 'tool-todo', ...(process.env.FAKE_DSH_EXTRA_TOOL ? [process.env.FAKE_DSH_EXTRA_TOOL] : [])];
+  const tools = ['tool-bash', 'tool-fs', 'tool-workflow', 'tool-todo', 'tool-skill', 'tool-web', 'skill', 'web-fetch-http', ...(process.env.FAKE_DSH_EXTRA_TOOL ? [process.env.FAKE_DSH_EXTRA_TOOL] : [])];
   process.stdout.write('- id: llm\\n  name: llm\\n' + tools.map((id) => '- id: ' + id + '\\n  name: x\\n' + (off(id) ? '  disabled: true\\n' : '')).join(''));
   process.exit(0);
 }
@@ -364,6 +364,27 @@ describe('dsh-acp plugin', { concurrency: true, timeout: 20_000 }, () => {
     assert.equal(readPid(fixture.pidFile), null);
   });
 
+  test('guest-workspace mode starts dsh with guest-workspace.patch.yml and blocks session/list', async (t) => {
+    const launchFile = path.join(os.tmpdir(), `dsh-acp-guest-${process.pid}-${Date.now()}.json`);
+    t.after(() => fs.rmSync(launchFile, { force: true }));
+    const fixture = makeFixture(t, { extraEnv: { FAKE_DSH_LAUNCHFILE: launchFile } });
+    const bridge = startBridge(fixture.env, ['--cindy-remote-workspace', '--cindy-guest-workspace']);
+    bridge.child.stdin.write(INITIALIZE);
+    await waitFor(() => bridge.stdout.bytes().length >= EXPECTED_RESPONSE.length, 8_000, 'initialize response');
+    const launch = JSON.parse(fs.readFileSync(launchFile, 'utf8'));
+    assert.deepEqual(launch.args, ['--profile', 'acp', '--patch', 'guest-workspace.patch.yml']);
+    assert.deepEqual(launch.files, ['guest-workspace.patch.yml']);
+
+    bridge.child.stdin.write('{"jsonrpc":"2.0","id":9,"method":"session/list","params":{}}\n');
+    await waitFor(() => bridge.stdout.text().includes('"id":9'), 3_000, 'session/list error');
+    const lines = bridge.stdout.text().trim().split('\n').map((line) => JSON.parse(line));
+    assert.equal(lines.find((m) => m.id === 9)?.error?.code, -32601);
+
+    bridge.child.stdin.end();
+    const { code } = await bridge.closed;
+    assert.equal(code, 0);
+  });
+
   test('stopping dsh-acp leaves no dsh process behind', async (t) => {
     // POSIX: the SIGTERM handler must stop a dsh that ignores stdin EOF.
     // Windows: TerminateProcess skips handlers; dsh must see EOF on its stdin and exit.
@@ -589,7 +610,7 @@ describe('dsh-acp plugin', { concurrency: true, timeout: 20_000 }, () => {
     // Start-up without a saved list: detect, read DSH's models once, publish them with the status.
     await waitFor(() => puts.some((body) => body.harnesses[0].models), 3_000, 'models published');
     assert.deepEqual(calls('listModels'), [{ method: 'listModels', params: {}, timeoutMs: 90_000 }]);
-    assert.deepEqual(puts.at(-1), { harnesses: [{ id: 'dsh', available: true, reportsUsage: true, remoteWorkspace: true, version: '0.2.2',
+    assert.deepEqual(puts.at(-1), { harnesses: [{ id: 'dsh', available: true, reportsUsage: true, remoteWorkspace: true, guestWorkspace: true, version: '0.2.2',
       models: [{ id: '["deepseek-official","v4-pro"]', name: 'DeepSeek-V4-Pro', group: 'DeepSeek' }] }] });
     assert.equal(savedState.modelSessionId, 'probe-1');
 
