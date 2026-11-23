@@ -38,6 +38,25 @@ Cindy 的任务执行引擎。插件通过清单的 `harnesses` 字段声明一�
 关闭只对这一次启动生效，不改你的 dsh 配置，你自己在终端里用 dsh 不受影响。启动前插件会读回 dsh 的实际配置核对；
 发现还有会作用在本机的工具，就不启动并在插件日志里写明是哪个工具。需要支持 `--patch` 的 dsh。
 
+## 在 Cindy 里使用多个 DeepSeek 账号
+
+支持插件引擎账号的 Cindy 可以像管理内置 Claude / Codex 账号池一样，给 DeepSeek Harness 添加多个账号：
+按负载分配任务、限制并发，某个账号余额用完时自动换到其他账号。对 DSH 来说一个账号就是一个 DeepSeek API Key，
+在 Cindy 添加账号时选择「DeepSeek API Key」并粘贴 Key 即可。
+
+- 原来的登录（插件设置页保存的 Key、`~/.dsh` 里的凭证、环境变量或 `.env`）是「默认」账号，照旧可用；
+  插件设置页修改的也是它。
+- Cindy 为新增的每个账号单独建一个目录，任务运行时把它作为这一个 dsh 进程的 `DSH_HOME`：Key、dsh 写下的
+  设置和会话历史都只放在这里，不读写 `~/.dsh`，也不使用环境变量里的 `DEEPSEEK_API_KEY`。目录不存在或不可写时
+  任务不启动（插件日志写明原因），不会退回到原来的登录。远程调用和分享给朋友的任务同样以账号目录启动并核对配置。
+  新账号的 dsh 从默认配置开始，不带 `~/.dsh` 里的个人设置。
+- 添加时插件先用 DeepSeek 官方余额接口核对 Key（配置了其他 `DEEPSEEK_BASE_URL` 时跳过），被拒绝的 Key 不保存；
+  Key 只写进该账号目录里 DSH 自己的凭证文件，插件只向 Cindy 报告「API Key ····末四位」，不报告由 Key 计算出的
+  任何指纹或哈希。每个账号的余额分开显示。
+- 任务因账号出错时，入口在 dsh 的错误回包里注明原因，供 Cindy 冷却该账号并换号：余额不足 → 额度用尽；Key 无效或
+  没有配置 → 需要重新登录；限流或服务繁忙 → 过载。其他消息照旧逐字节转发。
+- 旧版 Cindy 不会传账号目录，也不调用这些方法，插件行为与以前完全相同。
+
 ## 模型与思考深度
 
 插件向 dsh 读取它提供的模型（ACP 的 `model` 配置项）以及每个模型可选的思考深度
@@ -60,11 +79,13 @@ settings.html ──BroadcastChannel──► main.js：打开设置页或点「
 | --- | --- |
 | `ghost.json` | 清单：`node` 工作进程、额外入口 `dsh-acp.js`、`harnesses` 声明、设置页、常驻逻辑页 |
 | `main.js` | 逻辑页：启动时与设置页请求时检测 dsh，并 `PUT /harnesses` 发布可用状态 |
-| `worker.js` | Node 工作进程（json-rpc-stdio），提供 `detect` 方法 |
+| `worker.js` | Node 工作进程（json-rpc-stdio），提供 `detect`、用量与账号方法（`accountStatus` / `accountLogin`） |
 | `resolve-dsh.js` | 查找与启动 dsh 的共用代码（worker 与 ACP 入口用同一套查找顺序） |
 | `dsh-models.js` | 经 ACP 读取 dsh 的模型与每个模型的思考深度 |
 | `dsh-credentials.js` | 经 DSH 自带的凭证存储读写 DeepSeek API Key（设置页使用） |
 | `dsh-acp.js` | ACP 引擎入口：启动 `dsh --profile acp`，双向原样转发 stdio |
+| `account-dir.js` | Cindy 新增账号的目录：作为该次 dsh 的 `DSH_HOME`，不可用时拒绝启动 |
+| `acp-errors.js` | 为因账号失败的 `session/prompt` 错误回包补上 `error.data._meta.cindy` |
 | `remote-workspace.js` / `remote-workspace.patch.yml` | 任务文件在另一台电脑时：关掉 dsh 自带的本机工具并在启动前核对 |
 | `settings.html` / `settings.js` | 设置页：检测结果、版本、位置、安装提示与「重新检测」 |
 | `locales/` | 清单名称与说明的英文、简体中文文案 |
@@ -90,13 +111,15 @@ settings.html ──BroadcastChannel──► main.js：打开设置页或点「
 
 ### ACP 入口的进程约定
 
-- stdout 只承载 dsh 的输出，逐字节转发，入口自己从不写 stdout；dsh 的 stderr 转到入口的
+- stdout 只承载 dsh 的输出，按行逐字节转发（只有因账号失败的错误回包会补上 `error.data._meta.cindy`；
+  超过 1 MiB 的行不整行缓存，到多少转发多少，也不做识别），入口自己从不写 stdout；dsh 的 stderr 转到入口的
   stderr（进插件日志）。
 - Cindy 关闭 stdin → 入口关闭 dsh 的 stdin，dsh 自行退出；5 秒内没退出则强制结束。
 - dsh 退出 → 入口用同一个退出码退出。
 - 入口收到 SIGTERM / SIGINT / SIGHUP 或 stdout 断开 → 先结束 dsh 再退出（POSIX 先 SIGTERM，
   1.5 秒后 SIGKILL；Windows 用 `taskkill /pid <pid> /T /F` 结束整棵进程树）。
 - 找不到 dsh → 在 stderr 写一行不含 JSON-RPC 的提示，退出码 127。
+- 带 `--cindy-account-dir` 但目录不可用 → 在 stderr 写一行原因，退出码 77，不启动 dsh。
 
 ## 前提条件
 
@@ -162,6 +185,9 @@ node --test test/bridge.test.mjs
   发送）、没有多余字节；关闭 stdin 后两个进程都退出、没有残留 dsh；结束入口进程后 dsh 也被
   结束；dsh 在 stdin 关闭后赖着不走时会被强制结束（Windows 上走 `taskkill /T`）；找不到 dsh
   时退出码 127、stdout 为空、stderr 只有一行。
+- 带 `--cindy-account-dir` 时 dsh 的 `DSH_HOME` 是账号目录、拿不到用户环境里的 Key（远程与分享模式的配置核对
+  也用账号目录）；目录不可用时退出码 77、不启动 dsh；因账号失败的错误回包带上原因，其他消息逐字节不变；
+  `accountLogin` / `accountStatus` / `usage` 只读写临时账号目录，不碰默认登录，回包和日志里都没有 Key。
 
 ## 已知限制
 

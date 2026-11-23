@@ -16,6 +16,10 @@
  *    `--dump-config`; if any tool that is not known to be harmless here is still enabled (for
  *    example a tool added by a newer dsh or by a plugin in the user's profile), the entry
  *    refuses to start instead of running with a tool that would touch this computer.
+ *
+ * On an account Cindy added (`--cindy-account-dir`), the check and the launch both run with that
+ * account's directory as `DSH_HOME` (see account-dir.js), so the overlay is applied to, and checked
+ * against, the account's own DSH configuration instead of the user's default home.
  */
 
 const fs = require('node:fs');
@@ -164,15 +168,18 @@ function inspectComposedConfig(text, options) {
 
 /**
  * Runs the check launch and resolves to `{ ok: true }` or `{ ok: false, detail }`. `spawnDsh` is
- * the launcher from resolve-dsh.js (constant arguments only).
+ * the launcher from resolve-dsh.js (constant arguments only). `options.env` is the environment of
+ * the real launch (on an account Cindy added: that account's `DSH_HOME`), so the configuration
+ * checked is the one dsh will run with.
  */
 function verifyRemoteWorkspace(spawnDsh, dshPath, cwd, timeoutMs, options) {
   const guest = Boolean(options && options.guest);
+  const env = options && options.env;
   const checkArgs = guest ? GUEST_CHECK_ARGS : CHECK_ARGS;
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawnDsh(dshPath, checkArgs, { stdio: ['ignore', 'pipe', 'pipe'], cwd });
+      child = spawnDsh(dshPath, checkArgs, { stdio: ['ignore', 'pipe', 'pipe'], cwd, ...(env ? { env } : {}) });
     } catch (error) {
       resolve({ ok: false, detail: `could not run dsh (${error && error.message ? error.message : error})` });
       return;
