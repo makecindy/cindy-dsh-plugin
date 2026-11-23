@@ -534,6 +534,36 @@ describe('dsh-acp plugin', { concurrency: true, timeout: 20_000 }, () => {
     assert.equal((await bridge.closed).code, 0);
   });
 
+  // Why: a line longer than the classification limit (a large tool result) must not be held whole in
+  // the entry and copied again; review of the line relay. Smallest failing input: one line just over
+  // MAX_LINE_BYTES arriving in pieces, followed by an account error answer split across chunks.
+  test('a line over the size limit streams through as it arrives, unchanged, and the next line is still classified', async () => {
+    const { MAX_LINE_BYTES, createLineRelay } = await import(pathToFileURL(path.join(root, 'acp-errors.js')).href);
+    const writes = [];
+    const relay = createLineRelay((bytes) => { writes.push(Buffer.from(bytes)); return true; });
+    const written = () => writes.reduce((total, bytes) => total + bytes.length, 0);
+    // Looks like an account error answer, but is too long to be classified: it must pass as it is.
+    const big = Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: 1, error: { code: -32603,
+      message: 'Internal error: turn failed: Insufficient Balance ' + 'x'.repeat(2 * MAX_LINE_BYTES) } }) + '\n');
+    const answer = Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: 2, error: { code: -32603, message: 'Internal error: turn failed: Insufficient Balance' } }) + '\n');
+    const piece = Math.ceil(MAX_LINE_BYTES * 0.6);
+
+    relay.push(big.subarray(0, piece));
+    assert.equal(written(), 0, 'a partial line under the limit waits for its end');
+    relay.push(big.subarray(piece, 2 * piece));
+    assert.equal(written(), 2 * piece, 'past the limit everything received so far goes out at once');
+    assert.deepEqual(writes.map((bytes) => bytes.length), [piece, piece], 'the buffered pieces are not joined into one copy');
+    relay.push(Buffer.concat([big.subarray(2 * piece), answer.subarray(0, 30)]));
+    assert.equal(written(), big.length, 'the rest of the long line follows as it arrives, up to its newline');
+    relay.push(answer.subarray(30));
+    relay.flush();
+
+    const out = Buffer.concat(writes);
+    assert.ok(out.subarray(0, big.length).equals(big), 'the long line is relayed byte for byte');
+    assert.deepEqual(JSON.parse(out.subarray(big.length).toString('utf8')), { jsonrpc: '2.0', id: 2,
+      error: { code: -32603, message: 'Internal error: turn failed: Insufficient Balance', data: { _meta: { cindy: { kind: 'usage-limit' } } } } });
+  });
+
   test('stopping dsh-acp leaves no dsh process behind', async (t) => {
     // POSIX: the SIGTERM handler must stop a dsh that ignores stdin EOF.
     // Windows: TerminateProcess skips handlers; dsh must see EOF on its stdin and exit.
@@ -747,9 +777,8 @@ describe('dsh-acp plugin', { concurrency: true, timeout: 20_000 }, () => {
     assert.deepEqual(await login(6, `  ${secrets[0]}\n`), { ok: true });
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(accountDir, 'credentials.json'), 'utf8')), { DEEPSEEK_API_KEY: secrets[0] });
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(accountDir, 'provider-config.json'), 'utf8')), { watch: false, dshHome: accountDir });
-    const status = await call(7, 'accountStatus', account);
-    assert.deepEqual(status, { state: 'signed-in', identity: { detail: 'API Key ····7890' }, fingerprint: status.fingerprint });
-    assert.match(status.fingerprint, /^[0-9a-f]{16}$/);
+    // Only the masked hint: no fingerprint or any other value derived from the whole key.
+    assert.deepEqual(await call(7, 'accountStatus', account), { state: 'signed-in', identity: { detail: 'API Key ····7890' } });
     assert.deepEqual((await call(8, 'usage', account)).balances, [{ currency: 'CNY', amount: '42.00' }]);
     assert.deepEqual(await call(9, 'accountLoginCancel', account), { ok: true });
 
@@ -759,9 +788,7 @@ describe('dsh-acp plugin', { concurrency: true, timeout: 20_000 }, () => {
     assert.deepEqual(fs.readdirSync(path.join(fixture.dir, 'home')), []);
 
     // Without accountDir the calls are about the user's own login, as the settings page sees it.
-    const own = await call(10, 'accountStatus', { harnessId: 'dsh' });
-    assert.equal(own.state, 'signed-in');
-    assert.notEqual(own.fingerprint, status.fingerprint);
+    assert.deepEqual(await call(10, 'accountStatus', { harnessId: 'dsh' }), { state: 'signed-in', identity: { detail: 'API Key ····0001' } });
     assert.deepEqual((await call(11, 'usage', { harnessId: 'dsh' })).balances, [{ currency: 'CNY', amount: '1.00' }]);
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(accountDir, 'credentials.json'), 'utf8')), { DEEPSEEK_API_KEY: secrets[0] });
 

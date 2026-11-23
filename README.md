@@ -51,8 +51,8 @@ Cindy 的任务执行引擎。插件通过清单的 `harnesses` 字段声明一�
   任务不启动（插件日志写明原因），不会退回到原来的登录。远程调用和分享给朋友的任务同样以账号目录启动并核对配置。
   新账号的 dsh 从默认配置开始，不带 `~/.dsh` 里的个人设置。
 - 添加时插件先用 DeepSeek 官方余额接口核对 Key（配置了其他 `DEEPSEEK_BASE_URL` 时跳过），被拒绝的 Key 不保存；
-  Key 只写进该账号目录里 DSH 自己的凭证文件，插件只向 Cindy 报告「API Key ····末四位」和一个用来识别重复添加的
-  单向指纹。每个账号的余额分开显示。
+  Key 只写进该账号目录里 DSH 自己的凭证文件，插件只向 Cindy 报告「API Key ····末四位」，不报告由 Key 计算出的
+  任何指纹或哈希。每个账号的余额分开显示。
 - 任务因账号出错时，入口在 dsh 的错误回包里注明原因，供 Cindy 冷却该账号并换号：余额不足 → 额度用尽；Key 无效或
   没有配置 → 需要重新登录；限流或服务繁忙 → 过载。其他消息照旧逐字节转发。
 - 旧版 Cindy 不会传账号目录，也不调用这些方法，插件行为与以前完全相同。
@@ -111,8 +111,9 @@ settings.html ──BroadcastChannel──► main.js：打开设置页或点「
 
 ### ACP 入口的进程约定
 
-- stdout 只承载 dsh 的输出，按行逐字节转发（只有因账号失败的错误回包会补上 `error.data._meta.cindy`），
-  入口自己从不写 stdout；dsh 的 stderr 转到入口的 stderr（进插件日志）。
+- stdout 只承载 dsh 的输出，按行逐字节转发（只有因账号失败的错误回包会补上 `error.data._meta.cindy`；
+  超过 1 MiB 的行不整行缓存，到多少转发多少，也不做识别），入口自己从不写 stdout；dsh 的 stderr 转到入口的
+  stderr（进插件日志）。
 - Cindy 关闭 stdin → 入口关闭 dsh 的 stdin，dsh 自行退出；5 秒内没退出则强制结束。
 - dsh 退出 → 入口用同一个退出码退出。
 - 入口收到 SIGTERM / SIGINT / SIGHUP 或 stdout 断开 → 先结束 dsh 再退出（POSIX 先 SIGTERM，

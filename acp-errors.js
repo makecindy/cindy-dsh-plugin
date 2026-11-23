@@ -87,47 +87,82 @@ function classifyLine(line) {
 
 /**
  * Relays dsh's stdout one line at a time: complete lines go out as soon as they arrive (in one
- * write when none needs a change), a partial line waits for its end. `write(buffer)` returns
- * false for backpressure; `flush()` sends what is left when dsh's stdout ends.
+ * write when none needs a change), a partial line waits for its end. A line longer than
+ * MAX_LINE_BYTES (a large tool result, never an error answer) is not held: once the partial line
+ * passes the limit, what was buffered goes out and the rest of that line follows as it arrives,
+ * unclassified, up to its newline. Either way the bytes and their order are exactly dsh's.
+ * `write(buffer)` returns false for backpressure; `flush()` sends what is left when dsh's stdout ends.
  */
 function createLineRelay(write) {
-  // Chunks of the current partial line, joined only once its end arrives.
+  // Chunks of the current partial line (at most MAX_LINE_BYTES), joined only once its end arrives.
   let pending = [];
+  let pendingBytes = 0;
+  // The current line went over MAX_LINE_BYTES: it streams through until its newline.
+  let streaming = false;
+
+  const writeLines = (complete) => {
+    if (complete.indexOf(ERROR_MARK) === -1) return write(complete);
+    let ok = true;
+    let start = 0;
+    let runStart = 0;
+    while (start < complete.length) {
+      const end = complete.indexOf(0x0a, start) + 1;
+      const line = complete.subarray(start, end);
+      const out = classifyLine(line);
+      if (out !== line) {
+        if (runStart < start) ok = write(complete.subarray(runStart, start)) && ok;
+        ok = write(out) && ok;
+        runStart = end;
+      }
+      start = end;
+    }
+    if (runStart < complete.length) ok = write(complete.subarray(runStart)) && ok;
+    return ok;
+  };
+
+  const writePending = () => {
+    let ok = true;
+    for (const piece of pending) ok = write(piece) && ok;
+    pending = [];
+    pendingBytes = 0;
+    return ok;
+  };
+
   return {
     push(chunk) {
       let ok = true;
-      const last = chunk.lastIndexOf(0x0a);
-      if (last === -1) {
-        if (chunk.length) pending.push(chunk);
-        return ok;
+      let rest = chunk;
+      if (streaming) {
+        const end = rest.indexOf(0x0a);
+        if (end === -1) return write(rest);
+        ok = write(rest.subarray(0, end + 1)) && ok;
+        streaming = false;
+        rest = rest.subarray(end + 1);
       }
-      const head = chunk.subarray(0, last + 1);
-      const complete = pending.length ? Buffer.concat([...pending, head]) : head;
-      pending = last + 1 < chunk.length ? [chunk.subarray(last + 1)] : [];
-      if (complete.indexOf(ERROR_MARK) === -1) return write(complete);
-      let start = 0;
-      let runStart = 0;
-      while (start < complete.length) {
-        const end = complete.indexOf(0x0a, start) + 1;
-        const line = complete.subarray(start, end);
-        const out = classifyLine(line);
-        if (out !== line) {
-          if (runStart < start) ok = write(complete.subarray(runStart, start)) && ok;
-          ok = write(out) && ok;
-          runStart = end;
+      const last = rest.lastIndexOf(0x0a);
+      if (last !== -1) {
+        const head = rest.subarray(0, last + 1);
+        const complete = pending.length ? Buffer.concat([...pending, head]) : head;
+        pending = [];
+        pendingBytes = 0;
+        ok = writeLines(complete) && ok;
+        rest = rest.subarray(last + 1);
+      }
+      if (rest.length) {
+        pending.push(rest);
+        pendingBytes += rest.length;
+        if (pendingBytes > MAX_LINE_BYTES) {
+          ok = writePending() && ok;
+          streaming = true;
         }
-        start = end;
       }
-      if (runStart < complete.length) ok = write(complete.subarray(runStart)) && ok;
       return ok;
     },
     flush() {
-      if (!pending.length) return true;
-      const rest = Buffer.concat(pending);
-      pending = [];
-      return write(rest);
+      streaming = false;
+      return writePending();
     },
   };
 }
 
-module.exports = { classifyDshError, classifyLine, createLineRelay };
+module.exports = { MAX_LINE_BYTES, classifyDshError, classifyLine, createLineRelay };

@@ -16,10 +16,9 @@
  * the environment belongs to the user's own login, and dsh never sees it on an account either.
  *
  * Values never leave this module: results carry only { configured, source, writable }, and an
- * account's status only a masked hint (`API Key ····abcd`) and a one-way fingerprint.
+ * account's status only a masked hint (`API Key ····abcd`).
  */
 
-const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -250,19 +249,18 @@ function normalizeKey(raw) {
 }
 
 /**
- * What Cindy may know about a signed-in key: a masked hint for the account list and a short,
- * one-way fingerprint that only recognises the same key added twice. Never the key itself.
+ * What Cindy may know about a signed-in key: a masked hint for the account list. Never the key
+ * itself, nor anything derived from all of it (the protocol's optional `fingerprint` is not sent).
  */
 function signedInStatus(key) {
   const tail = key.slice(-4);
   const detail = key.length >= 12 && /^[\x21-\x7e]{4}$/.test(tail) ? 'API Key ····' + tail : 'API Key';
-  const fingerprint = crypto.createHash('sha256').update('cindy-dsh-account\0' + key, 'utf8').digest('hex').slice(0, 16);
-  return { state: 'signed-in', identity: { detail }, fingerprint };
+  return { state: 'signed-in', identity: { detail } };
 }
 
 /**
- * Cindy's `accountStatus`: `{ state: 'signed-in', identity, fingerprint }` when this home has a
- * DeepSeek key, `{ state: 'signed-out' }` when not, null when DSH's store cannot be used here.
+ * Cindy's `accountStatus`: `{ state: 'signed-in', identity }` when this home has a DeepSeek key,
+ * `{ state: 'signed-out' }` when not, null when DSH's store cannot be used here.
  */
 async function accountStatus(options) {
   const result = await withStore(options, async (store, ref) => {

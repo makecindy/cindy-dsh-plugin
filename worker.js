@@ -26,7 +26,7 @@
  * Engine accounts (Cindy calls these for harness `dsh`; see account-dir.js). No `accountDir` means
  * the user's own DSH login, which is also what the settings page edits:
  *   accountStatus({ harnessId, accountDir? })
- *     -> null | { state: 'signed-in' | 'signed-out', identity?: { detail }, fingerprint? }
+ *     -> null | { state: 'signed-in' | 'signed-out', identity?: { detail } }   (no `fingerprint`)
  *   accountLogin({ harnessId, accountDir?, methodId: 'api-key', secret })
  *     -> { ok: true } | { ok: false, error, message? }   (saves the key in that home's DSH store)
  *   accountLoginCancel({ harnessId, accountDir? }) -> { ok: true }   (a key has nothing to wait for)
