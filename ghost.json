@@ -3,8 +3,8 @@
   "id": "dsh-acp",
   "name": "DeepSeek Harness",
   "description": "Run Cindy tasks with the DeepSeek Harness (dsh) installed on this computer.",
-  "version": "0.3.0",
-  "releaseNotes": "支持把这台电脑上的 DeepSeek Harness 分享给朋友免安装使用，同账号的其他电脑也可免装插件直接使用；分享模式下额外关闭本机技能、指令与本机网页抓取，保护本机数据与内网。",
+  "version": "0.4.0",
+  "releaseNotes": "支持在 Cindy 里给 DeepSeek Harness 添加多个 DeepSeek API Key 账号：每个账号单独保存 Key 与对话记录，Cindy 按账号分配任务，账号行显示 Key 末四位与余额；余额不足、Key 失效或限流时自动换到其他账号。需要支持插件引擎多账号的 Cindy，旧版 Cindy 照常使用原有的 Key。",
   "minCindyVersion": "0.0.0",
   "icon": "icon.png",
   "locales": {
