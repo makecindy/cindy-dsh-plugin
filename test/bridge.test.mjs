@@ -27,6 +27,7 @@ const EXPECTED_RESPONSE = Buffer.from(`{"jsonrpc":"2.0","id":0,"result":${RESULT
 
 const FAKE_DSH_SOURCE = `'use strict';
 const fs = require('node:fs');
+const path = require('node:path');
 const args = process.argv.slice(2);
 if (args.length === 1 && args[0] === '--version') {
   if (process.env.FAKE_DSH_BROKEN === '1') {
@@ -47,7 +48,10 @@ if (isRemote && args.length === 5 && args[4] === '--dump-config') {
   const overlay = fs.readFileSync(args[3], 'utf8');
   // The overlay may be checked out with CRLF line endings; dsh reads it either way.
   const off = (id) => new RegExp('^- id: ' + id + '\\r?\\n  disabled: true\\r?$', 'm').test(overlay);
-  const tools = ['tool-bash', 'tool-fs', 'tool-workflow', 'tool-todo', 'tool-skill', 'tool-web', 'skill', 'web-fetch-http', ...(process.env.FAKE_DSH_EXTRA_TOOL ? [process.env.FAKE_DSH_EXTRA_TOOL] : [])];
+  // A tool that only the configuration in this launch's DSH home adds (e.g. a plugin of that home).
+  const homeToolFile = process.env.DSH_HOME ? path.join(process.env.DSH_HOME, 'fake-home-tool') : '';
+  const homeTool = homeToolFile && fs.existsSync(homeToolFile) ? fs.readFileSync(homeToolFile, 'utf8').trim() : '';
+  const tools = ['tool-bash', 'tool-fs', 'tool-workflow', 'tool-todo', 'tool-skill', 'tool-web', 'skill', 'web-fetch-http', ...(process.env.FAKE_DSH_EXTRA_TOOL ? [process.env.FAKE_DSH_EXTRA_TOOL] : []), ...(homeTool ? [homeTool] : [])];
   process.stdout.write('- id: llm\\n  name: llm\\n' + tools.map((id) => '- id: ' + id + '\\n  name: x\\n' + (off(id) ? '  disabled: true\\n' : '')).join(''));
   process.exit(0);
 }
@@ -56,7 +60,8 @@ if (!(isRemote && args.length === 4) && (args.length !== 2 || args[0] !== '--pro
   process.exit(2);
 }
 if (process.env.FAKE_DSH_LAUNCHFILE) {
-  fs.writeFileSync(process.env.FAKE_DSH_LAUNCHFILE, JSON.stringify({ args, cwd: process.cwd(), files: fs.readdirSync(process.cwd()) }));
+  fs.writeFileSync(process.env.FAKE_DSH_LAUNCHFILE, JSON.stringify({ args, cwd: process.cwd(), files: fs.readdirSync(process.cwd()),
+    dshHome: process.env.DSH_HOME === undefined ? null : process.env.DSH_HOME, hasKeyEnv: process.env.DEEPSEEK_API_KEY !== undefined }));
 }
 if (process.env.FAKE_DSH_PIDFILE) fs.writeFileSync(process.env.FAKE_DSH_PIDFILE, String(process.pid));
 process.stderr.write('fake-dsh: ready\\n');
@@ -70,6 +75,16 @@ process.stdin.on('data', (chunk) => {
     buffered = buffered.slice(index + 1);
     if (!line.trim()) continue;
     const message = JSON.parse(line);
+    if (message.method === 'session/prompt' && process.env.FAKE_DSH_PROMPT_FAILS === '1') {
+      // Fails the turn the way dsh does (JSON-RPC -32603); the prompt text is the error message.
+      // First an update that merely mentions such an error, then the error answer in two pieces.
+      const text = message.params.prompt[0].text;
+      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 's1', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text }, error: text } } }) + '\\n');
+      const answer = Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: message.id, error: { code: -32603, message: text } }) + '\\n', 'utf8');
+      process.stdout.write(answer.subarray(0, 20));
+      setTimeout(() => process.stdout.write(answer.subarray(20)), 20);
+      continue;
+    }
     if (message.method !== 'initialize') continue;
     const bytes = Buffer.from('{"jsonrpc":"2.0","id":' + JSON.stringify(message.id) + ',"result":' + RESULT_JSON + '}\\n', 'utf8');
     // Split inside a multi-byte character: the bridge must relay bytes, not text.
@@ -181,6 +196,7 @@ function startWorker(env, preload) {
     if (next) next(JSON.parse(line));
   });
   return {
+    stderr: () => stderr.text(),
     call(request) {
       return new Promise((resolve) => {
         waiting.push(resolve);
@@ -198,7 +214,9 @@ function startWorker(env, preload) {
 /**
  * A stand-in for the npm layout of `@deepseek-ai/dsh` next to the fake dsh: the package plus
  * minimal `cordis` / `dsh-credentials` / `dsh-credentials-local` modules with the API surface the
- * plugin uses. The fake store keeps keys in `<dir>/credentials.json` and records its config.
+ * plugin uses. Like DSH's provider, the fake store lives in the configured `dshHome`, else in the
+ * default home (here `FAKE_DSH_HOME`): it keeps keys in `<home>/credentials.json`, records its
+ * config there, and falls back to the process environment below the file.
  */
 function addFakeCredentialStore(fixture) {
   const pkg = path.join(path.dirname(fixture.dshPath), 'node_modules', '@deepseek-ai', 'dsh');
@@ -227,30 +245,47 @@ function addFakeCredentialStore(fixture) {
   dep('dsh-credentials', 'export const credentialRef = (name) => name;\n');
   dep('dsh-credentials-local', `import fs from 'node:fs';
 import path from 'node:path';
-const home = process.env.FAKE_DSH_HOME;
-const file = path.join(home, 'credentials.json');
-const read = () => (fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {});
 export class LocalCredentialProvider {
-  constructor(ctx, config) { fs.writeFileSync(path.join(home, 'provider-config.json'), JSON.stringify(config)); }
+  constructor(ctx, config) {
+    this.home = config.dshHome || process.env.FAKE_DSH_HOME;
+    this.file = path.join(this.home, 'credentials.json');
+    fs.writeFileSync(path.join(this.home, 'provider-config.json'), JSON.stringify(config));
+  }
+  read() { return fs.existsSync(this.file) ? JSON.parse(fs.readFileSync(this.file, 'utf8')) : {}; }
   async resolve(ref) {
-    const value = read()[ref] || process.env[ref];
-    return value ? { value } : undefined;
+    if (this.read()[ref]) return { value: this.read()[ref], source: 'file' };
+    return process.env[ref] ? { value: process.env[ref], source: 'env' } : undefined;
   }
   async describe(ref) {
-    if (read()[ref]) return { configured: true, source: 'file', writable: true };
+    if (this.read()[ref]) return { configured: true, source: 'file', writable: true };
     if (process.env[ref]) return { configured: true, source: 'env', writable: true };
     return { configured: false, writable: true };
   }
-  async set(ref, value) { fs.writeFileSync(file, JSON.stringify({ ...read(), [ref]: value })); }
-  async unset(ref) { const next = read(); delete next[ref]; fs.writeFileSync(file, JSON.stringify(next)); }
+  async set(ref, value) { fs.writeFileSync(this.file, JSON.stringify({ ...this.read(), [ref]: value })); }
+  async unset(ref) { const next = this.read(); delete next[ref]; fs.writeFileSync(this.file, JSON.stringify(next)); }
 }
 `);
   return { storeFile: path.join(fixture.dir, 'credentials.json'), configFile: path.join(fixture.dir, 'provider-config.json') };
 }
 
-function startBridge(env, args = []) {
+/** With `t`, an entry a failed assertion left running is stopped, so the test file can exit. */
+function startBridge(env, args = [], t = undefined) {
   const child = spawn(process.execPath, [path.join(root, 'dsh-acp.js'), ...args], { env, cwd: os.tmpdir(), stdio: 'pipe' });
+  if (t) t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill(); });
   return { child, stdout: collect(child.stdout), stderr: collect(child.stderr), closed: waitClose(child) };
+}
+
+/** An account directory as Cindy creates it for an account it added (empty, in the temp folder). */
+function makeAccountDir(t) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-account-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  return dir;
+}
+
+function tempLaunchFile(t, name) {
+  const file = path.join(os.tmpdir(), `dsh-acp-${name}-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+  t.after(() => fs.rmSync(file, { force: true }));
+  return file;
 }
 
 describe('dsh-acp plugin', { concurrency: true, timeout: 20_000 }, () => {
@@ -383,6 +418,120 @@ describe('dsh-acp plugin', { concurrency: true, timeout: 20_000 }, () => {
     bridge.child.stdin.end();
     const { code } = await bridge.closed;
     assert.equal(code, 0);
+  });
+
+  // Why: on an account Cindy added, dsh must keep that account's key, settings and sessions in the
+  // account's directory (DSH_HOME) and must not see the user's own key. Gap: every other launch test
+  // runs without the argument. Smallest failing input: the plain launch plus `--cindy-account-dir`.
+  test('an account Cindy added runs dsh with DSH_HOME set to its directory and without the user key', async (t) => {
+    const launchFile = tempLaunchFile(t, 'account');
+    const accountDir = makeAccountDir(t);
+    const fixture = makeFixture(t, { extraEnv: { FAKE_DSH_LAUNCHFILE: launchFile, DEEPSEEK_API_KEY: 'sk-user-own-login' } });
+    const bridge = startBridge(fixture.env, ['--cindy-account-dir', accountDir], t);
+    bridge.child.stdin.write(INITIALIZE);
+    await waitFor(() => bridge.stdout.bytes().length >= EXPECTED_RESPONSE.length, 8_000, 'initialize response');
+    assert.ok(bridge.stdout.bytes().equals(EXPECTED_RESPONSE), `stdout was ${JSON.stringify(bridge.stdout.text())}`);
+    const launch = JSON.parse(fs.readFileSync(launchFile, 'utf8'));
+    assert.deepEqual(launch.args, ['--profile', 'acp']);
+    assert.ok(launch.dshHome && samePath(launch.dshHome, accountDir), `DSH_HOME was ${launch.dshHome}`);
+    assert.equal(launch.hasKeyEnv, false, 'the user’s own key never reaches an account’s dsh');
+    assert.deepEqual(fs.readdirSync(accountDir), [], 'the write check leaves nothing behind');
+    bridge.child.stdin.end();
+    assert.equal((await bridge.closed).code, 0);
+
+    // Without the argument nothing changes: the user's own home and key, as before.
+    const own = startBridge(fixture.env, [], t);
+    own.child.stdin.write(INITIALIZE);
+    await waitFor(() => own.stdout.bytes().length >= EXPECTED_RESPONSE.length, 8_000, 'initialize response');
+    const ownLaunch = JSON.parse(fs.readFileSync(launchFile, 'utf8'));
+    assert.equal(ownLaunch.dshHome, null);
+    assert.equal(ownLaunch.hasKeyEnv, true);
+    own.child.stdin.end();
+    assert.equal((await own.closed).code, 0);
+  });
+
+  // Why: with the project on another computer, the tool check must read the configuration of the
+  // DSH home the task really runs with; an account's home can add tools the user's home lacks.
+  test('remote and guest launches on an account check and run dsh with that account’s DSH_HOME', async (t) => {
+    const launchFile = tempLaunchFile(t, 'account-guest');
+    const accountDir = makeAccountDir(t);
+    const fixture = makeFixture(t, { extraEnv: { FAKE_DSH_LAUNCHFILE: launchFile } });
+    const bridge = startBridge(fixture.env, ['--cindy-remote-workspace', '--cindy-guest-workspace', '--cindy-account-dir', accountDir], t);
+    bridge.child.stdin.write(INITIALIZE);
+    await waitFor(() => bridge.stdout.bytes().length >= EXPECTED_RESPONSE.length, 8_000, 'initialize response');
+    const launch = JSON.parse(fs.readFileSync(launchFile, 'utf8'));
+    assert.deepEqual(launch.args, ['--profile', 'acp', '--patch', 'guest-workspace.patch.yml']);
+    assert.ok(launch.dshHome && samePath(launch.dshHome, accountDir), `DSH_HOME was ${launch.dshHome}`);
+    bridge.child.stdin.end();
+    assert.equal((await bridge.closed).code, 0);
+
+    // A tool only this account's home adds is caught by the check, so the launch is refused.
+    fs.writeFileSync(path.join(accountDir, 'fake-home-tool'), 'tool-account-plugin');
+    const refused = startBridge(fixture.env, ['--cindy-remote-workspace', '--cindy-account-dir', accountDir], t);
+    assert.equal((await refused.closed).code, 78);
+    assert.equal(refused.stdout.bytes().length, 0);
+    assert.match(refused.stderr.text(), /tool-account-plugin/);
+  });
+
+  // Why: an account must never silently run on the user's own login. Smallest failing input: an
+  // account directory that is missing, relative, a file, or not given at all.
+  test('an account directory that cannot be used stops the launch instead of using the user’s login', async (t) => {
+    const fixture = makeFixture(t);
+    const file = path.join(fixture.dir, 'not-a-directory');
+    fs.writeFileSync(file, '');
+    const cases = [
+      ['--cindy-account-dir', path.join(fixture.dir, 'missing')],
+      ['--cindy-account-dir', path.join('relative', 'dir')],
+      ['--cindy-account-dir', file],
+      ['--cindy-account-dir'],
+      ['--cindy-remote-workspace', '--cindy-account-dir', path.join(fixture.dir, 'missing')],
+    ];
+    for (const args of cases) {
+      const bridge = startBridge(fixture.env, args, t);
+      const { code } = await bridge.closed;
+      assert.equal(code, 77, `exit code for ${JSON.stringify(args)}`);
+      assert.equal(bridge.stdout.bytes().length, 0);
+      assert.match(bridge.stderr.text(), /^\[dsh-acp\] [^\n]*does not fall back to your own DeepSeek login\.\n$/);
+    }
+    assert.equal(readPid(fixture.pidFile), null, 'dsh was never started');
+  });
+
+  // Why: Cindy cools an account and moves the task only when it knows the turn failed because of the
+  // account; dsh reports every failed turn as the same -32603 error. Smallest failing input: one
+  // session/prompt answered with dsh's "turn failed" error (the reasons are DeepSeek's and dsh's texts).
+  test('dsh-acp marks account errors of a failed turn for Cindy and relays everything else unchanged', async (t) => {
+    const fixture = makeFixture(t, { extraEnv: { FAKE_DSH_PROMPT_FAILS: '1' } });
+    const bridge = startBridge(fixture.env, [], t);
+    const cases = [
+      ['Internal error: turn failed: Insufficient Balance', 'usage-limit'],
+      ['Internal error: turn failed: DeepSeek Messages request failed (402)', 'usage-limit'],
+      ['Internal error: turn failed: Authentication Fails, Your api key: ****0000 is invalid (request_id: 1)', 'auth-required'],
+      ['Internal error: turn failed: llm-deepseek: no API key for provider route "deepseek-official"; store DEEPSEEK_API_KEY', 'auth-required'],
+      ['Internal error: turn failed: Rate Limit Reached', 'overloaded'],
+      ['Internal error: turn failed: DeepSeek Messages request failed (503)', 'overloaded'],
+      ['Internal error: prompt was not queued: Server Overloaded', 'overloaded'],
+      ['Internal error: turn failed: the model context window was exceeded ✓', null],
+      ['Invalid params: Insufficient Balance', null],
+    ];
+    for (const [index, [text, kind]] of cases.entries()) {
+      const id = 10 + index;
+      const from = bridge.stdout.bytes().length;
+      bridge.child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method: 'session/prompt', params: { sessionId: 's1', prompt: [{ type: 'text', text }] } }) + '\n');
+      await waitFor(() => bridge.stdout.text().includes(`"id":${id},`), 5_000, `answer ${id}`);
+      const [update, answer, ...rest] = bridge.stdout.bytes().subarray(from).toString('utf8').split('\n');
+      assert.deepEqual(rest, [''], 'whole lines only');
+      // The update merely mentions the error: relayed byte for byte.
+      assert.equal(update, JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 's1',
+        update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text }, error: text } } }));
+      const original = { jsonrpc: '2.0', id, error: { code: -32603, message: text } };
+      if (kind) {
+        assert.deepEqual(JSON.parse(answer), { ...original, error: { ...original.error, data: { _meta: { cindy: { kind } } } } }, text);
+      } else {
+        assert.equal(answer, JSON.stringify(original), `${text} passes unchanged`);
+      }
+    }
+    bridge.child.stdin.end();
+    assert.equal((await bridge.closed).code, 0);
   });
 
   test('stopping dsh-acp leaves no dsh process behind', async (t) => {
@@ -559,6 +708,88 @@ describe('dsh-acp plugin', { concurrency: true, timeout: 20_000 }, () => {
     } finally { await worker.close(); }
   });
 
+  // Why: Cindy adds an account by handing the worker a key once. It must land in that account's DSH
+  // home only; the user's own login must neither count as the account nor be read or changed, and
+  // no key may come back or reach the log. Gap: the key tests above only cover the user's own home.
+  // Smallest failing input: accountStatus / accountLogin with a fresh account directory.
+  test('accountLogin keeps a key in the account’s DSH home only; accountStatus and usage report it without the key', async (t) => {
+    const fixture = makeFixture(t, { extraEnv: { DEEPSEEK_API_KEY: 'sk-user-own-env-key-0001' } });
+    fixture.env.FAKE_DSH_HOME = fixture.dir;
+    const store = addFakeCredentialStore(fixture);
+    const accountDir = makeAccountDir(t);
+    const preload = path.join(fixture.dir, 'deepseek.cjs');
+    fs.writeFileSync(preload, `globalThis.fetch = async (url, options) => {
+      if (url !== 'https://api.deepseek.com/user/balance' || options.redirect !== 'error') throw new Error('unexpected request');
+      const key = options.headers.Authorization.replace(/^Bearer /, '');
+      if (key.startsWith('sk-rejected')) return { ok: false, status: 401, json: async () => ({}) };
+      return { ok: true, status: 200, json: async () => ({ balance_infos: [
+        { currency: 'CNY', total_balance: key.endsWith('7890') ? '42.00' : '1.00' }] }) };
+    };`);
+    const secrets = ['sk-account-secret-1234567890', 'sk-rejected-secret-0000000000', 'sk-user-own-env-key-0001'];
+    const worker = startWorker(fixture.env, preload);
+    const call = async (id, method, params) => {
+      const response = await worker.call({ jsonrpc: '2.0', id, method, params });
+      for (const secret of secrets) assert.ok(!JSON.stringify(response).includes(secret), `${method} response must not carry a key`);
+      return response.result;
+    };
+    const account = { harnessId: 'dsh', accountDir };
+    const login = (id, secret, methodId = 'api-key') => call(id, 'accountLogin', { ...account, methodId, secret });
+
+    // A new account has no key, even though the user's own login has one in the environment.
+    assert.deepEqual(await call(1, 'accountStatus', account), { state: 'signed-out' });
+    assert.equal(await call(2, 'usage', account), null);
+
+    assert.equal((await login(3, 'sk-with space')).error, 'invalid-secret');
+    assert.equal((await login(4, secrets[1])).error, 'invalid-secret', 'DeepSeek refused the key (401)');
+    assert.equal((await login(5, secrets[0], 'browser-sign-in')).error, 'unsupported');
+    assert.equal(fs.existsSync(path.join(accountDir, 'credentials.json')), false, 'a refused key is never written');
+
+    assert.deepEqual(await login(6, `  ${secrets[0]}\n`), { ok: true });
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(accountDir, 'credentials.json'), 'utf8')), { DEEPSEEK_API_KEY: secrets[0] });
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(accountDir, 'provider-config.json'), 'utf8')), { watch: false, dshHome: accountDir });
+    const status = await call(7, 'accountStatus', account);
+    assert.deepEqual(status, { state: 'signed-in', identity: { detail: 'API Key ····7890' }, fingerprint: status.fingerprint });
+    assert.match(status.fingerprint, /^[0-9a-f]{16}$/);
+    assert.deepEqual((await call(8, 'usage', account)).balances, [{ currency: 'CNY', amount: '42.00' }]);
+    assert.deepEqual(await call(9, 'accountLoginCancel', account), { ok: true });
+
+    // None of that read or wrote the user's own login (its store, its home).
+    assert.equal(fs.existsSync(store.storeFile), false);
+    assert.equal(fs.existsSync(store.configFile), false);
+    assert.deepEqual(fs.readdirSync(path.join(fixture.dir, 'home')), []);
+
+    // Without accountDir the calls are about the user's own login, as the settings page sees it.
+    const own = await call(10, 'accountStatus', { harnessId: 'dsh' });
+    assert.equal(own.state, 'signed-in');
+    assert.notEqual(own.fingerprint, status.fingerprint);
+    assert.deepEqual((await call(11, 'usage', { harnessId: 'dsh' })).balances, [{ currency: 'CNY', amount: '1.00' }]);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(accountDir, 'credentials.json'), 'utf8')), { DEEPSEEK_API_KEY: secrets[0] });
+
+    // Other engines and folders that do not exist get no answer.
+    assert.equal(await call(12, 'accountStatus', { harnessId: 'other', accountDir }), null);
+    assert.equal(await call(13, 'accountStatus', { harnessId: 'dsh', accountDir: path.join(accountDir, 'missing') }), null);
+    await worker.close();
+    for (const secret of secrets) assert.ok(!worker.stderr().includes(secret), 'the worker never logs a key');
+  });
+
+  // Why: a key kept only in `~/.dsh/.env` works in dsh today; reading that login as signed out would
+  // make Cindy stop using it. Smallest failing input: no key in the credential file or environment.
+  test('the user’s own login counts a key in its DSH home .env; an account Cindy added does not', async (t) => {
+    const fixture = makeFixture(t);
+    fixture.env.FAKE_DSH_HOME = fixture.dir;
+    addFakeCredentialStore(fixture);
+    fs.mkdirSync(path.join(fixture.dir, 'home', '.dsh'));
+    fs.writeFileSync(path.join(fixture.dir, 'home', '.dsh', '.env'), 'DEEPSEEK_API_KEY="sk-dotenv-only-key-5678"\n');
+    const accountDir = makeAccountDir(t);
+    const worker = startWorker(fixture.env);
+    const status = async (id, params) => (await worker.call({ jsonrpc: '2.0', id, method: 'accountStatus', params })).result;
+    const own = await status(1, { harnessId: 'dsh' });
+    assert.equal(own.state, 'signed-in');
+    assert.equal(own.identity.detail, 'API Key ····5678');
+    assert.deepEqual(await status(2, { harnessId: 'dsh', accountDir }), { state: 'signed-out' });
+    await worker.close();
+  });
+
   test('main.js passes the key to the worker once and returns only its status fields', async () => {
     class Channel {
       static all = [];
@@ -610,7 +841,8 @@ describe('dsh-acp plugin', { concurrency: true, timeout: 20_000 }, () => {
     // Start-up without a saved list: detect, read DSH's models once, publish them with the status.
     await waitFor(() => puts.some((body) => body.harnesses[0].models), 3_000, 'models published');
     assert.deepEqual(calls('listModels'), [{ method: 'listModels', params: {}, timeoutMs: 90_000 }]);
-    assert.deepEqual(puts.at(-1), { harnesses: [{ id: 'dsh', available: true, reportsUsage: true, remoteWorkspace: true, guestWorkspace: true, version: '0.2.2',
+    assert.deepEqual(puts.at(-1), { harnesses: [{ id: 'dsh', available: true, reportsUsage: true, remoteWorkspace: true, guestWorkspace: true,
+      accounts: { methods: [{ id: 'api-key', label: 'DeepSeek API Key', kind: 'secret', secretLabel: 'DeepSeek API Key' }] }, version: '0.2.2',
       models: [{ id: '["deepseek-official","v4-pro"]', name: 'DeepSeek-V4-Pro', group: 'DeepSeek' }] }] });
     assert.equal(savedState.modelSessionId, 'probe-1');
 

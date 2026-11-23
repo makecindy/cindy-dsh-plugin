@@ -33,6 +33,12 @@
   var MAX_MODELS = 200;
   /** Cindy reasoning levels, low → high; the same set dsh-models.js reports. */
   var EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+  /**
+   * Cindy can add more DeepSeek accounts to this engine, each one API key typed into Cindy and
+   * kept in its own DSH home (worker.js accountLogin, dsh-acp.js --cindy-account-dir). The term is
+   * the same in every language the plugin has.
+   */
+  var ACCOUNT_METHODS = [{ id: 'api-key', label: 'DeepSeek API Key', kind: 'secret', secretLabel: 'DeepSeek API Key' }];
 
   var locale = 'en';
   var lastResult = null;
@@ -163,6 +169,12 @@
     if (entry.available) {
       entry.remoteWorkspace = true;
       entry.guestWorkspace = true;
+      // Older Cindy drops this field and keeps the engine on the user's own login only.
+      entry.accounts = {
+        methods: ACCOUNT_METHODS.map(function (method) {
+          return { id: method.id, label: method.label, kind: method.kind, secretLabel: method.secretLabel };
+        }),
+      };
     }
 
     if (!entry.available) {
