@@ -1,8 +1,22 @@
 # DeepSeek Harness 插件（dsh-acp）
 
-在 Cindy 打开 DeepSeek Harness 插件设置，可检测本机 CLI、从官方 npm 源安装及检查更新。安装需要本机 Node.js 24.9 或更高版本和 npm，使用当前用户的专用目录，已有的 DSH 登录和配置沿用。安装或更新时，设置页显示当前步骤、已用时间，下载时显示进度、速度和剩余时间；可展开的安装日志列出每一步和安装程序的输出（用户目录显示为 ~，凭据会被隐去）。日志只保存在插件运行期间，重新打开设置页也能看到。安装日志里能看到 npm 拉取的每个包。
+> [!IMPORTANT]
+> **本仓库已归档（只读），今后不再维护和更新。**
+>
+> DeepSeek Harness 插件现已改由 **Cindy 官方维护**，并上架 Cindy 官方插件市场。请在 Cindy 的「插件」市场搜索 **DeepSeek Harness**，从那里安装和更新（需要 Cindy 0.1.143 或更高版本）。本仓库的 Releases 不会再发布新版本。
+>
+> 官方版的插件 ID 仍是 `dsh-acp`。装好官方版后，如果插件页里还有从本仓库导入的旧版，把旧版卸载即可。
+>
+> - 官方版源码：[makecindy/cindy-official-plugins › dsh-acp](https://github.com/makecindy/cindy-official-plugins/tree/main/dsh-acp)
+> - 问题与建议：请提交到 [cindy-official-plugins 的 Issues](https://github.com/makecindy/cindy-official-plugins/issues)
+>
+> **This repository is archived and no longer maintained.** The DeepSeek Harness plugin is now officially maintained by Cindy and published in the official Cindy plugin marketplace. Please install and update it from **Plugins** in Cindy (Cindy 0.1.143 or later). Source: [makecindy/cindy-official-plugins](https://github.com/makecindy/cindy-official-plugins/tree/main/dsh-acp).
 
-从旧版升级时，请从新仓库下载 .cindy 文件并在 Cindy 导入一次，之后插件更新将使用 makecindy 下的新地址。
+---
+
+*以下是归档前的原始说明，仅供参考。其中「从本仓库 Releases 下载、更新和发布新版本」的做法已不再适用。*
+
+在 Cindy 打开 DeepSeek Harness 插件设置，可检测本机 CLI、从官方 npm 源安装及检查更新。安装需要本机 Node.js 24.9 或更高版本和 npm，使用当前用户的专用目录，已有的 DSH 登录和配置沿用。安装或更新时，设置页显示当前步骤、已用时间，下载时显示进度、速度和剩余时间；可展开的安装日志列出每一步和安装程序的输出（用户目录显示为 ~，凭据会被隐去）。日志只保存在插件运行期间，重新打开设置页也能看到。安装日志里能看到 npm 拉取的每个包。
 
 把本机已安装的 [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh)（`dsh`）作为
 Cindy 的任务执行引擎。插件通过清单的 `harnesses` 字段声明一个 ACP 引擎，Cindy 在模型选择器的
